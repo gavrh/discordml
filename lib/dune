@@ -1,2 +1,4 @@
 (library
- (name discord))
+ (name discord)
+ (preprocess (pps ppx_deriving.show ppx_deriving.eq))
+ (libraries saturn))

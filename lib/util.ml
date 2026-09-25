@@ -1,3 +1,2 @@
-let string_of_option = function
-    | Some x -> x
-    | None -> "None"
+let string_of_dynarray (d : 'a Dynarray.t) =
+    Printf.sprintf "[ ...%d ]" (Dynarray.length d)
