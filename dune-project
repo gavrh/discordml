@@ -15,7 +15,15 @@
   (name discord)
   (synopsis "Discord API library")
   (description "Discord API library for OCaml")
-  (depends ocaml)
+  (depends
+    ocaml
+    eio
+    tls
+    tls-eio
+    ca-certs
+    yojson
+    ppx_deriving
+    ppx_deriving_yojson)
   (tags
     ("discord")))
 
