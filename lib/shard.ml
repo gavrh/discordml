@@ -1,9 +1,19 @@
-type t = {
-    id : int;
-    conn : Ws.t;
-} [@@deriving show, eq]
+module type Shard = sig
+    type t
 
-let create (i : int) : t =
-    match Ws.create i with
-    | None -> failwith (Printf.sprintf "Failed to init gateway connection (Shard %d)" i)
-    | Some ws -> { id = i; conn = ws }
+    val connect : sw:Eio.Switch.t -> net:'a Eio.Net.t -> int -> t
+
+    val show : t -> string
+end
+
+include (struct
+
+    type t = {
+        id : int;
+        conn : Ws.t [@opaque];
+    } [@@deriving show]
+
+    let connect ~(sw : Eio.Switch.t) ~(net : 'a Eio.Net.t) (i : int) : t =
+        { id = i; conn = Ws.connect ~sw ~net }
+
+end : Shard)

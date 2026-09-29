@@ -27,9 +27,14 @@ module type Client = sig
     module Intent : Intent
 
     type t
+    val token : t -> string option
+    val id : t -> string option
+    val guilds : t -> (string, Guild.t) Hashtbl.t
+
     val create : int -> t
     val start : t -> string -> unit
-    val token : t -> string option
+
+    val show : t -> string
 end
 
 include (struct
@@ -56,7 +61,6 @@ include (struct
         let auto_moderation_execution = 1 lsl 21
         let guild_message_polls = 1 lsl 24
         let direct_message_polls = 1 lsl 25
-
         let all =
             guilds lor
             guild_members lor
@@ -86,20 +90,26 @@ include (struct
         token : string option;
         id : string option;
         intents : int;
-        guilds : (string, Guild.t) Saturn.Htbl.t;
-        shards : (int, Shard.t) Hashtbl.t
-    }
+        guilds : (string, Guild.t) Hashtbl.t [@printer fun fmt tbl -> Format.fprintf fmt "[ ...%d ]" (Hashtbl.length tbl)];
+        guilds_mutex : Eio.Mutex.t [@opaque];
+        shards : (int, Discord_private.Shard.t) Hashtbl.t [@printer fun fmt tbl -> Format.fprintf fmt "[ ...%d ]" (Hashtbl.length tbl)];
+        shards_mutex : Eio.Mutex.t [@opaque];
+    } [@@deriving show]
+
+    let token (c : t) : string option = c.token
+    let id (c : t) : string option = c.id
+    let guilds (c : t) : (string, Guild.t) Hashtbl.t = c.guilds
 
     let create (i : int) : t = {
         token = None;
         id = None;
         intents = i;
-        guilds = Saturn.Htbl.create ();
-        shards = Hashtbl.create (0);
+        guilds = Hashtbl.create 0;
+        guilds_mutex = Eio.Mutex.create ();
+        shards = Hashtbl.create 0;
+        shards_mutex = Eio.Mutex.create ();
     }
 
     let start (c : t) (t : string) : unit = ()
-
-    let token (c : t) : string option = c.token
 
 end : Client)

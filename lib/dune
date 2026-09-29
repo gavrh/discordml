@@ -1,4 +1,16 @@
 (library
  (name discord)
- (preprocess (pps ppx_deriving.show ppx_deriving.eq))
- (libraries saturn))
+ (public_name discord)
+ (modules channel client guild)
+ (libraries discord_private)
+ (preprocess
+  (pps ppx_deriving.show ppx_deriving.eq ppx_deriving_yojson)))
+
+(library
+ (name discord_private)
+ (package discord)
+ (modules rest shard websocket ws)
+ (libraries eio tls tls-eio ca-certs domain-name digestif
+   mirage-crypto-rng mirage-crypto-rng.unix yojson)
+ (preprocess
+  (pps ppx_deriving.show ppx_deriving.eq ppx_deriving_yojson)))
