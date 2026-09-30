@@ -7,7 +7,7 @@ module type Ws = sig
 
     val gateway : string
 
-    val gateway_url : shard:int -> num_shards:int -> string
+    val gateway_url : url:string -> shard:int -> num_shards:int -> string
 
     val connect : sw:Eio.Switch.t -> net:'a Eio.Net.t -> url:string -> t
 
@@ -309,8 +309,9 @@ include (struct
     let gateway : string =
         "wss://gateway.discord.gg/?v=" ^ gateway_version ^ "&encoding=" ^ encoding
 
-    let gateway_url ~(shard : int) ~(num_shards : int) : string =
-        Printf.sprintf "%s&shard=%d&num_shards=%d" gateway shard num_shards
+    let gateway_url ~(url : string) ~(shard : int) ~(num_shards : int) : string =
+        Printf.sprintf "%s/?v=%s&encoding=%s&shard=%d&num_shards=%d" url
+            gateway_version encoding shard num_shards
 
     let connect ~(sw : Eio.Switch.t) ~(net : 'a Eio.Net.t) ~(url : string) : t =
         connect_url ~sw ~net url
