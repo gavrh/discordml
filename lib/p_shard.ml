@@ -14,6 +14,6 @@ include (struct
     } [@@deriving show]
 
     let connect ~(sw : Eio.Switch.t) ~(net : 'a Eio.Net.t) (i : int) : t =
-        { id = i; conn = P_ws.connect ~sw ~net }
+        { id = i; conn = P_ws.connect ~sw ~net ~url:P_ws.gateway }
 
 end : Shard)
