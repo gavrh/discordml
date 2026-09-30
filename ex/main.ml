@@ -5,4 +5,11 @@ let token : string =
     | Some token -> token
 
 let client = Discord.Client.create Discord.Client.Intent.all
-let () = Discord.Client.start client token
+
+let () = print_endline (Discord.Client.show client)
+
+let () =
+    Eio_main.run @@ fun env ->
+    let net = Eio.Stdenv.net env in
+    let clock = Eio.Stdenv.clock env in
+    Discord.Client.start ~net ~clock client token
