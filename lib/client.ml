@@ -33,7 +33,8 @@ module type Client = sig
 
     val create : int -> t
     val start :
-        net:'a Eio.Net.t -> clock:'b Eio.Time.clock -> t -> string -> unit
+        env:< net : 'a Eio.Net.t; clock : 'b Eio.Time.clock; .. > ->
+        t -> string -> unit
 
     val show : t -> string
 end
@@ -111,8 +112,9 @@ include (struct
         shards_mutex = Eio.Mutex.create ();
     }
 
-    let start ~(net : 'a Eio.Net.t) ~(clock : 'b Eio.Time.clock) (c : t)
-            (token : string) : unit =
+    let start ~env (c : t) (token : string) : unit =
+        let net = Eio.Stdenv.net env in
+        let clock = Eio.Stdenv.clock env in
         Eio.Switch.run @@ fun sw ->
         let info = Discord_private.P_rest.gateway_bot ~sw ~net ~token in
         let rec spawn i =
