@@ -1,7 +1,14 @@
-module type Websocket = sig
+module type Ws = sig
     type t
 
-    val connect : sw:Eio.Switch.t -> net:'a Eio.Net.t -> string -> t
+    val gateway_version : string
+
+    val encoding : string
+
+    val gateway : string
+
+    val connect : sw:Eio.Switch.t -> net:'a Eio.Net.t -> t
+
     val send_text : t -> string -> unit
     val send_binary : t -> string -> unit
     val recv : t -> string option
@@ -241,7 +248,7 @@ include (struct
 
     let is_closed (t : t) : bool = t.closed
 
-    let connect ~(sw : Eio.Switch.t) ~(net : 'a Eio.Net.t) (url : string) : t =
+    let connect_url ~(sw : Eio.Switch.t) ~(net : 'a Eio.Net.t) (url : string) : t =
         ensure_rng ();
         let u = parse_uri url in
         let config = tls_config () in
@@ -294,4 +301,13 @@ include (struct
          | None -> failwith "websocket: missing Sec-WebSocket-Accept");
         { flow; reader; closed = false }
 
-end : Websocket)
+    let gateway_version : string = "10"
+    let encoding : string = "json"
+
+    let gateway : string =
+        "wss://gateway.discord.gg/?v=" ^ gateway_version ^ "&encoding=" ^ encoding
+
+    let connect ~(sw : Eio.Switch.t) ~(net : 'a Eio.Net.t) : t =
+        connect_url ~sw ~net gateway
+
+end : Ws)

@@ -10,10 +10,10 @@ include (struct
 
     type t = {
         id : int;
-        conn : Ws.t [@opaque];
+        conn : P_ws.t [@opaque];
     } [@@deriving show]
 
     let connect ~(sw : Eio.Switch.t) ~(net : 'a Eio.Net.t) (i : int) : t =
-        { id = i; conn = Ws.connect ~sw ~net }
+        { id = i; conn = P_ws.connect ~sw ~net }
 
 end : Shard)

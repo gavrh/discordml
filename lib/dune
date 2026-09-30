@@ -9,7 +9,7 @@
 (library
  (name discord_private)
  (package discord)
- (modules rest shard websocket ws)
+ (modules p_rest p_shard p_ws)
  (libraries eio tls tls-eio ca-certs domain-name digestif
    mirage-crypto-rng mirage-crypto-rng.unix yojson)
  (preprocess

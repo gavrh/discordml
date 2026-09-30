@@ -92,7 +92,7 @@ include (struct
         intents : int;
         guilds : (string, Guild.t) Hashtbl.t [@printer fun fmt tbl -> Format.fprintf fmt "[ ...%d ]" (Hashtbl.length tbl)];
         guilds_mutex : Eio.Mutex.t [@opaque];
-        shards : (int, Discord_private.Shard.t) Hashtbl.t [@printer fun fmt tbl -> Format.fprintf fmt "[ ...%d ]" (Hashtbl.length tbl)];
+        shards : (int, Discord_private.P_shard.t) Hashtbl.t [@printer fun fmt tbl -> Format.fprintf fmt "[ ...%d ]" (Hashtbl.length tbl)];
         shards_mutex : Eio.Mutex.t [@opaque];
     } [@@deriving show]
 
