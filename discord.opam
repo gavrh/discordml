@@ -12,6 +12,9 @@ depends: [
   "dune" {>= "3.24"}
   "ocaml"
   "eio"
+  "cohttp-eio"
+  "http"
+  "uri"
   "tls"
   "tls-eio"
   "ca-certs"

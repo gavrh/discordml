@@ -18,6 +18,9 @@
   (depends
     ocaml
     eio
+    cohttp-eio
+    http
+    uri
     tls
     tls-eio
     ca-certs
