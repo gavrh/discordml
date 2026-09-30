@@ -32,7 +32,8 @@ module type Client = sig
     val guilds : t -> (string, Guild.t) Hashtbl.t
 
     val create : int -> t
-    val start : t -> string -> unit
+    val start :
+        net:'a Eio.Net.t -> clock:'b Eio.Time.clock -> t -> string -> unit
 
     val show : t -> string
 end
@@ -110,6 +111,29 @@ include (struct
         shards_mutex = Eio.Mutex.create ();
     }
 
-    let start (c : t) (t : string) : unit = ()
+    let start ~(net : 'a Eio.Net.t) ~(clock : 'b Eio.Time.clock) (c : t)
+            (token : string) : unit =
+        Eio.Switch.run @@ fun sw ->
+        let info = Discord_private.P_rest.gateway_bot ~sw ~net ~token in
+        let rec spawn i =
+            if i < info.shards then begin
+                let shard =
+                    Discord_private.P_shard.connect ~sw ~net ~url:info.url
+                        ~id:i ~num_shards:info.shards ~token ~intents:c.intents
+                in
+                Eio.Mutex.use_rw ~protect:true c.shards_mutex (fun () ->
+                    Hashtbl.replace c.shards i shard);
+                Eio.Fiber.fork ~sw (fun () ->
+                    Fun.protect
+                        ~finally:(fun () ->
+                            Eio.Mutex.use_rw ~protect:true c.shards_mutex (fun () ->
+                                Hashtbl.remove c.shards i))
+                        (fun () -> Discord_private.P_shard.run clock shard));
+                if (i + 1) mod info.max_concurrency = 0 then
+                    Eio.Time.sleep clock 5.;
+                spawn (i + 1)
+            end
+        in
+        spawn 0
 
 end : Client)
