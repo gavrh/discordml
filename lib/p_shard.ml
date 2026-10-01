@@ -102,9 +102,9 @@ include (struct
 
     let read_hello (t : t) : unit =
         match P_ws.recv t.conn with
-        | None ->
+        | P_ws.Closed _ ->
             failwith (Printf.sprintf "shard %d: gateway closed before hello" t.id)
-        | Some s ->
+        | P_ws.Data s ->
             let json = Yojson.Safe.from_string s in
             let open Yojson.Safe.Util in
             (match op_of_int (json |> member "op" |> to_int) with
@@ -177,8 +177,8 @@ include (struct
         let open Yojson.Safe.Util in
         let rec loop () =
             match P_ws.recv t.conn with
-            | None -> ()
-            | Some s ->
+            | P_ws.Closed _ -> ()
+            | P_ws.Data s ->
                 let json = Yojson.Safe.from_string s in
                 (match op_of_int (json |> member "op" |> to_int) with
                  | Heartbeat_ack ->

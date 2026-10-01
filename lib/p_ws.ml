@@ -1,6 +1,44 @@
 module type Ws = sig
     type t
 
+    type close_code =
+        | Normal
+        | Going_away
+        | Protocol_error
+        | Unsupported_data
+        | No_status
+        | Abnormal
+        | Invalid_payload
+        | Policy_violation
+        | Message_too_big
+        | Mandatory_extension
+        | Internal_error
+        | Service_restart
+        | Try_again_later
+        | Tls_handshake
+        | Unknown_error
+        | Unknown_opcode
+        | Decode_error
+        | Not_authenticated
+        | Authentication_failed
+        | Already_authenticated
+        | Invalid_seq
+        | Rate_limited
+        | Session_timed_out
+        | Invalid_shard
+        | Sharding_required
+        | Invalid_api_version
+        | Invalid_intents
+        | Disallowed_intents
+        | Unknown_code of int
+
+    type message =
+        | Data of string
+        | Closed of close_code * string
+
+    val close_code_of_int : int -> close_code
+    val int_of_close_code : close_code -> int
+
     val gateway_version : string
 
     val encoding : string
@@ -13,7 +51,7 @@ module type Ws = sig
 
     val send_text : t -> string -> unit
     val send_binary : t -> string -> unit
-    val recv : t -> string option
+    val recv : t -> message
     val close : t -> unit
     val is_closed : t -> bool
 end
@@ -193,19 +231,123 @@ include (struct
         in
         (fin, opcode, payload)
 
-    let rec recv (t : t) : string option =
-        if t.closed then None
+    type close_code =
+        | Normal
+        | Going_away
+        | Protocol_error
+        | Unsupported_data
+        | No_status
+        | Abnormal
+        | Invalid_payload
+        | Policy_violation
+        | Message_too_big
+        | Mandatory_extension
+        | Internal_error
+        | Service_restart
+        | Try_again_later
+        | Tls_handshake
+        | Unknown_error
+        | Unknown_opcode
+        | Decode_error
+        | Not_authenticated
+        | Authentication_failed
+        | Already_authenticated
+        | Invalid_seq
+        | Rate_limited
+        | Session_timed_out
+        | Invalid_shard
+        | Sharding_required
+        | Invalid_api_version
+        | Invalid_intents
+        | Disallowed_intents
+        | Unknown_code of int
+
+    let close_code_of_int = function
+        | 1000 -> Normal
+        | 1001 -> Going_away
+        | 1002 -> Protocol_error
+        | 1003 -> Unsupported_data
+        | 1005 -> No_status
+        | 1006 -> Abnormal
+        | 1007 -> Invalid_payload
+        | 1008 -> Policy_violation
+        | 1009 -> Message_too_big
+        | 1010 -> Mandatory_extension
+        | 1011 -> Internal_error
+        | 1012 -> Service_restart
+        | 1013 -> Try_again_later
+        | 1015 -> Tls_handshake
+        | 4000 -> Unknown_error
+        | 4001 -> Unknown_opcode
+        | 4002 -> Decode_error
+        | 4003 -> Not_authenticated
+        | 4004 -> Authentication_failed
+        | 4005 -> Already_authenticated
+        | 4007 -> Invalid_seq
+        | 4008 -> Rate_limited
+        | 4009 -> Session_timed_out
+        | 4010 -> Invalid_shard
+        | 4011 -> Sharding_required
+        | 4012 -> Invalid_api_version
+        | 4013 -> Invalid_intents
+        | 4014 -> Disallowed_intents
+        | n -> Unknown_code n
+
+    let int_of_close_code = function
+        | Normal -> 1000
+        | Going_away -> 1001
+        | Protocol_error -> 1002
+        | Unsupported_data -> 1003
+        | No_status -> 1005
+        | Abnormal -> 1006
+        | Invalid_payload -> 1007
+        | Policy_violation -> 1008
+        | Message_too_big -> 1009
+        | Mandatory_extension -> 1010
+        | Internal_error -> 1011
+        | Service_restart -> 1012
+        | Try_again_later -> 1013
+        | Tls_handshake -> 1015
+        | Unknown_error -> 4000
+        | Unknown_opcode -> 4001
+        | Decode_error -> 4002
+        | Not_authenticated -> 4003
+        | Authentication_failed -> 4004
+        | Already_authenticated -> 4005
+        | Invalid_seq -> 4007
+        | Rate_limited -> 4008
+        | Session_timed_out -> 4009
+        | Invalid_shard -> 4010
+        | Sharding_required -> 4011
+        | Invalid_api_version -> 4012
+        | Invalid_intents -> 4013
+        | Disallowed_intents -> 4014
+        | Unknown_code n -> n
+
+    type message =
+        | Data of string
+        | Closed of close_code * string
+
+    let parse_close (payload : string) : close_code * string =
+        if String.length payload >= 2 then
+            let code = (Char.code payload.[0] lsl 8) lor Char.code payload.[1] in
+            (close_code_of_int code, String.sub payload 2 (String.length payload - 2))
+        else (No_status, "")
+
+    let rec recv (t : t) : message =
+        if t.closed then Closed (Abnormal, "")
         else
             match read_frame t with
             | exception End_of_file ->
                 t.closed <- true;
-                None
+                Closed (Abnormal, "")
             | fin, opcode, payload ->
                 (match opcode with
                  | op when op = op_close ->
+                     let code, reason = parse_close payload in
                      (try send_frame t op_close "" with _ -> ());
                      t.closed <- true;
-                     None
+                     Closed (code, reason)
                  | op when op = op_ping ->
                      send_frame t op_pong payload;
                      recv t
@@ -214,15 +356,16 @@ include (struct
                      let buf = Buffer.create 256 in
                      Buffer.add_string buf payload;
                      let rec more () =
-                         if fin then Some (Buffer.contents buf)
+                         if fin then Data (Buffer.contents buf)
                          else
                              match read_frame t with
                              | fin', op', p' ->
                                  (match op' with
                                   | op when op = op_close ->
+                                      let code, reason = parse_close p' in
                                       (try send_frame t op_close "" with _ -> ());
                                       t.closed <- true;
-                                      None
+                                      Closed (code, reason)
                                   | op when op = op_ping ->
                                       send_frame t op_pong p';
                                       more ()
@@ -232,9 +375,9 @@ include (struct
                                       more' fin')
                              | exception End_of_file ->
                                  t.closed <- true;
-                                 None
+                                 Closed (Abnormal, "")
                      and more' fin' =
-                         if fin' then Some (Buffer.contents buf) else more ()
+                         if fin' then Data (Buffer.contents buf) else more ()
                      in
                      more ())
 
