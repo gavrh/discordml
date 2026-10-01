@@ -243,6 +243,12 @@ include (struct
                 with exn -> Socket_closed (P_ws.Abnormal, Printexc.to_string exn)
             in
             match reason with
+            | Socket_closed (P_ws.Disallowed_intents, _) ->
+                prerr_endline
+                    "shard: intents not enabled for this application (enable \
+                     privileged intents in the Discord developer portal)"
+            | Socket_closed (P_ws.Authentication_failed, _) ->
+                prerr_endline "shard: authentication failed (check the bot token)"
             | Socket_closed (code, _) when fatal_close code -> ()
             | _ ->
                 let delay =
