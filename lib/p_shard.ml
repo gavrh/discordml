@@ -26,6 +26,48 @@ end
 
 include (struct
 
+    type op =
+        | Dispatch
+        | Heartbeat
+        | Identify
+        | Presence_update
+        | Voice_state_update
+        | Resume
+        | Reconnect
+        | Request_guild_members
+        | Invalid_session
+        | Hello
+        | Heartbeat_ack
+        | Unknown of int
+
+    let op_of_int = function
+        | 0 -> Dispatch
+        | 1 -> Heartbeat
+        | 2 -> Identify
+        | 3 -> Presence_update
+        | 4 -> Voice_state_update
+        | 6 -> Resume
+        | 7 -> Reconnect
+        | 8 -> Request_guild_members
+        | 9 -> Invalid_session
+        | 10 -> Hello
+        | 11 -> Heartbeat_ack
+        | n -> Unknown n
+
+    let int_of_op = function
+        | Dispatch -> 0
+        | Heartbeat -> 1
+        | Identify -> 2
+        | Presence_update -> 3
+        | Voice_state_update -> 4
+        | Resume -> 6
+        | Reconnect -> 7
+        | Request_guild_members -> 8
+        | Invalid_session -> 9
+        | Hello -> 10
+        | Heartbeat_ack -> 11
+        | Unknown n -> n
+
     type ready = {
         session_id : string;
         resume_gateway_url : string;
@@ -65,13 +107,16 @@ include (struct
         | Some s ->
             let json = Yojson.Safe.from_string s in
             let open Yojson.Safe.Util in
-            let op = json |> member "op" |> to_int in
-            if op <> 10 then
-                failwith (Printf.sprintf "shard %d: expected hello, got op %d" t.id op);
-            let interval =
-                json |> member "d" |> member "heartbeat_interval" |> to_int
-            in
-            t.heartbeat_interval <- Some (float_of_int interval /. 1000.)
+            (match op_of_int (json |> member "op" |> to_int) with
+             | Hello ->
+                 let interval =
+                     json |> member "d" |> member "heartbeat_interval" |> to_int
+                 in
+                 t.heartbeat_interval <- Some (float_of_int interval /. 1000.)
+             | op ->
+                 failwith
+                     (Printf.sprintf "shard %d: expected hello, got op %d" t.id
+                        (int_of_op op)))
 
     let identify (t : t) : unit =
         let properties =
@@ -87,12 +132,12 @@ include (struct
                   ("shard", `List [ `Int t.id; `Int t.num_shards ]);
                   ("properties", properties) ]
         in
-        let payload = `Assoc [ ("op", `Int 2); ("d", d) ] in
+        let payload = `Assoc [ ("op", `Int (int_of_op Identify)); ("d", d) ] in
         P_ws.send_text t.conn (Yojson.Safe.to_string payload)
 
     let send_heartbeat (t : t) : unit =
         let d = match t.seq with Some s -> `Int s | None -> `Null in
-        let payload = `Assoc [ ("op", `Int 1); ("d", d) ] in
+        let payload = `Assoc [ ("op", `Int (int_of_op Heartbeat)); ("d", d) ] in
         P_ws.send_text t.conn (Yojson.Safe.to_string payload);
         t.acked <- false
 
@@ -135,14 +180,14 @@ include (struct
             | None -> ()
             | Some s ->
                 let json = Yojson.Safe.from_string s in
-                (match json |> member "op" |> to_int with
-                 | 11 ->
+                (match op_of_int (json |> member "op" |> to_int) with
+                 | Heartbeat_ack ->
                      t.acked <- true;
                      loop ()
-                 | 1 ->
+                 | Heartbeat ->
                      send_heartbeat t;
                      loop ()
-                 | 0 ->
+                 | Dispatch ->
                      (match json |> member "s" |> to_int_option with
                       | Some seq -> t.seq <- Some seq
                       | None -> ());
@@ -154,7 +199,7 @@ include (struct
                            | None -> ())
                       | _ -> ());
                      loop ()
-                 | 7 | 9 -> ()
+                 | Reconnect | Invalid_session -> ()
                  | _ -> loop ())
         in
         loop ()
