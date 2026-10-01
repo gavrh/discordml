@@ -4,10 +4,11 @@ let token : string =
     | None -> failwith "No token found"
     | Some token -> token
 
-let client = Discord.Client.create Discord.Client.Intent.all
+let client = Discord.Client.create Discord.Intent.standard
 
 let () =
-    Discord.Client.on_ready client (fun ctx ->
+    Discord.Client.on_event client Discord.Event.Ready (fun ctx payload ->
+        let () = print_endline (Yojson.Safe.show payload) in
         match Discord.Client.id ctx with
         | Some id -> Printf.printf "ready as %s\n%!" id
         | None -> ())
