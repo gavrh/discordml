@@ -1,14 +1,6 @@
 module type Shard = sig
     type t
 
-    type ready = {
-        session_id : string;
-        resume_gateway_url : string;
-        user_id : string;
-        user_name : string;
-        application_id : string;
-    }
-
     val connect :
         url:string ->
         id:int ->
@@ -18,7 +10,7 @@ module type Shard = sig
         t
 
     val run :
-        ?on_ready:(ready -> unit) ->
+        dispatch:(string -> Yojson.Safe.t -> unit) ->
         net:'a Eio.Net.t ->
         'b Eio.Time.clock ->
         t ->
@@ -70,14 +62,6 @@ include (struct
         | Hello -> 10
         | Heartbeat_ack -> 11
         | Unknown n -> n
-
-    type ready = {
-        session_id : string;
-        resume_gateway_url : string;
-        user_id : string;
-        user_name : string;
-        application_id : string;
-    } [@@deriving show]
 
     type t = {
         id : int;
@@ -169,28 +153,17 @@ include (struct
             in
             loop true
 
-    let handle_ready (t : t) (d : Yojson.Safe.t) : ready =
+    let handle_ready (t : t) (d : Yojson.Safe.t) : unit =
         let open Yojson.Safe.Util in
-        let user = d |> member "user" in
-        let ready =
-            { session_id = d |> member "session_id" |> to_string;
-              resume_gateway_url = d |> member "resume_gateway_url" |> to_string;
-              user_id = user |> member "id" |> to_string;
-              user_name = user |> member "username" |> to_string;
-              application_id =
-                d |> member "application" |> member "id" |> to_string_option
-                |> Option.value ~default:"" }
-        in
-        t.session_id <- Some ready.session_id;
-        t.resume_gateway_url <- Some ready.resume_gateway_url;
-        ready
+        t.session_id <- Some (d |> member "session_id" |> to_string);
+        t.resume_gateway_url <- Some (d |> member "resume_gateway_url" |> to_string)
 
     type close_reason =
         | Reconnect_requested
         | Session_invalid of bool
         | Socket_closed of P_ws.close_code * string
 
-    let listen on_ready (conn : P_ws.t) (t : t) : close_reason =
+    let listen dispatch (conn : P_ws.t) (t : t) : close_reason =
         let open Yojson.Safe.Util in
         let rec loop () =
             match P_ws.recv conn with
@@ -209,14 +182,15 @@ include (struct
                       | Some seq -> t.seq <- Some seq
                       | None -> ());
                      (match json |> member "t" |> to_string_option with
-                      | Some "READY" ->
-                          let ready = handle_ready t (json |> member "d") in
-                          t.established <- true;
-                          (match on_ready with
-                           | Some f -> f ready
-                           | None -> ())
-                      | Some "RESUMED" -> t.established <- true
-                      | _ -> ());
+                      | Some name ->
+                          (match name with
+                           | "READY" ->
+                               handle_ready t (json |> member "d");
+                               t.established <- true
+                           | "RESUMED" -> t.established <- true
+                           | _ -> ());
+                          dispatch name (json |> member "d")
+                      | None -> ());
                      loop ()
                  | Reconnect -> Reconnect_requested
                  | Invalid_session ->
@@ -245,7 +219,7 @@ include (struct
         t.resume_gateway_url <- None;
         t.seq <- None
 
-    let run ?on_ready ~(net : 'a Eio.Net.t) clock (t : t) : unit =
+    let run ~dispatch ~(net : 'a Eio.Net.t) clock (t : t) : unit =
         let jitter d = d *. (0.5 +. Random.float 1.) in
         let rec loop delay =
             let url =
@@ -265,7 +239,7 @@ include (struct
                     read_hello conn t;
                     Eio.Fiber.fork ~sw (fun () -> heartbeat_loop clock conn t);
                     resume conn t;
-                    listen on_ready conn t
+                    listen dispatch conn t
                 with exn -> Socket_closed (P_ws.Abnormal, Printexc.to_string exn)
             in
             match reason with
