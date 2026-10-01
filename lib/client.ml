@@ -27,14 +27,19 @@ module type Client = sig
     module Intent : Intent
 
     type t
+    type ctx
+
     val token : t -> string option
-    val id : t -> string option
-    val guilds : t -> (string, Guild.t) Hashtbl.t
 
     val create : int -> t
     val start :
         env:< net : 'a Eio.Net.t; clock : 'b Eio.Time.clock; .. > ->
         t -> string -> unit
+
+    val id : ctx -> string option
+    val guild : ctx -> string -> Guild.t option
+
+    val on_ready : t -> (ctx -> unit) -> unit
 
     val show : t -> string
 end
@@ -90,17 +95,25 @@ include (struct
 
     type t = {
         token : string option;
-        id : string option;
+        mutable id : string option;
         intents : int;
         guilds : (string, Guild.t) Hashtbl.t [@printer fun fmt tbl -> Format.fprintf fmt "[ ...%d ]" (Hashtbl.length tbl)];
         guilds_mutex : Eio.Mutex.t [@opaque];
         shards : (int, Discord_private.P_shard.t) Hashtbl.t [@printer fun fmt tbl -> Format.fprintf fmt "[ ...%d ]" (Hashtbl.length tbl)];
         shards_mutex : Eio.Mutex.t [@opaque];
+        mutable on_ready : (t -> unit) list [@opaque];
     } [@@deriving show]
 
+    type ctx = t
+
     let token (c : t) : string option = c.token
-    let id (c : t) : string option = c.id
-    let guilds (c : t) : (string, Guild.t) Hashtbl.t = c.guilds
+    let id (c : ctx) : string option = c.id
+
+    let guild (c : ctx) (gid : string) : Guild.t option =
+        Eio.Mutex.use_ro c.guilds_mutex (fun () -> Hashtbl.find_opt c.guilds gid)
+
+    let on_ready (c : t) (f : ctx -> unit) : unit =
+        c.on_ready <- f :: c.on_ready
 
     let create (i : int) : t = {
         token = None;
@@ -110,6 +123,7 @@ include (struct
         guilds_mutex = Eio.Mutex.create ();
         shards = Hashtbl.create 0;
         shards_mutex = Eio.Mutex.create ();
+        on_ready = [];
     }
 
     let start ~env (c : t) (token : string) : unit =
@@ -117,6 +131,10 @@ include (struct
         let clock = Eio.Stdenv.clock env in
         Eio.Switch.run @@ fun sw ->
         let info = Discord_private.P_rest.gateway_bot ~sw ~net ~token in
+        let handle_ready (r : Discord_private.P_shard.ready) =
+            c.id <- Some r.user_id;
+            List.iter (fun f -> Eio.Fiber.fork ~sw (fun () -> f c)) c.on_ready
+        in
         let rec spawn i =
             if i < info.shards then begin
                 let shard =
@@ -130,7 +148,9 @@ include (struct
                         ~finally:(fun () ->
                             Eio.Mutex.use_rw ~protect:true c.shards_mutex (fun () ->
                                 Hashtbl.remove c.shards i))
-                        (fun () -> Discord_private.P_shard.run clock shard));
+                        (fun () ->
+                            Discord_private.P_shard.run ~on_ready:handle_ready
+                                clock shard));
                 if (i + 1) mod info.max_concurrency = 0 then
                     Eio.Time.sleep clock 5.;
                 spawn (i + 1)
