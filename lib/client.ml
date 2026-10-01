@@ -32,9 +32,7 @@ module type Client = sig
     val token : t -> string option
 
     val create : int -> t
-    val start :
-        env:< net : 'a Eio.Net.t; clock : 'b Eio.Time.clock; .. > ->
-        t -> string -> unit
+    val start : env:Eio_unix.Stdenv.base -> t -> string -> unit
 
     val id : ctx -> string option
     val guild : ctx -> string -> Guild.t option
@@ -126,7 +124,7 @@ include (struct
         on_ready = [];
     }
 
-    let start ~env (c : t) (token : string) : unit =
+    let start ~(env : Eio_unix.Stdenv.base) (c : t) (token : string) : unit =
         let net = Eio.Stdenv.net env in
         let clock = Eio.Stdenv.clock env in
         Eio.Switch.run @@ fun sw ->
