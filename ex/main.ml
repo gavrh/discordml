@@ -6,7 +6,11 @@ let token : string =
 
 let client = Discord.Client.create Discord.Client.Intent.all
 
-let () = print_endline (Discord.Client.show client)
+let () =
+    Discord.Client.on_ready client (fun ctx ->
+        match Discord.Client.id ctx with
+        | Some id -> Printf.printf "ready as %s\n%!" id
+        | None -> ())
 
 let () =
     Eio_main.run @@ fun env ->
