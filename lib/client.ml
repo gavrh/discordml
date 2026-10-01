@@ -26,6 +26,7 @@ include (struct
         shards : (int, Discord_private.P_shard.t) Hashtbl.t [@printer fun fmt tbl -> Format.fprintf fmt "[ ...%d ]" (Hashtbl.length tbl)];
         shards_mutex : Eio.Mutex.t [@opaque];
         handlers : (Event.t, (t -> Yojson.Safe.t -> unit) list) Hashtbl.t Atomic.t [@opaque];
+        mutable rest : Discord_private.P_rest.t option [@opaque];
     } [@@deriving show]
 
     type ctx = t
@@ -58,13 +59,16 @@ include (struct
         shards = Hashtbl.create 0;
         shards_mutex = Eio.Mutex.create ();
         handlers = Atomic.make (Hashtbl.create 0);
+        rest = None;
     }
 
     let start ~(env : Eio_unix.Stdenv.base) (c : t) (token : string) : unit =
         let net = Eio.Stdenv.net env in
         let clock = Eio.Stdenv.clock env in
         Eio.Switch.run @@ fun sw ->
-        let info = Discord_private.P_rest.gateway_bot ~sw ~net ~token in
+        let rest = Discord_private.P_rest.create ~sw ~net ~clock ~token in
+        c.rest <- Some rest;
+        let info = Discord_private.P_rest.gateway_bot rest in
         let open Yojson.Safe.Util in
         let dispatch (name : string) (json : Yojson.Safe.t) : unit =
             match Event.of_string name with
