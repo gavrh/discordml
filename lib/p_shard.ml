@@ -10,8 +10,6 @@ module type Shard = sig
     }
 
     val connect :
-        sw:Eio.Switch.t ->
-        net:'a Eio.Net.t ->
         url:string ->
         id:int ->
         num_shards:int ->
@@ -19,7 +17,12 @@ module type Shard = sig
         intents:int ->
         t
 
-    val run : ?on_ready:(ready -> unit) -> 'a Eio.Time.clock -> t -> unit
+    val run :
+        ?on_ready:(ready -> unit) ->
+        net:'a Eio.Net.t ->
+        'b Eio.Time.clock ->
+        t ->
+        unit
 
     val show : t -> string
 end
@@ -81,27 +84,23 @@ include (struct
         num_shards : int;
         token : string [@opaque];
         intents : int;
-        conn : P_ws.t [@opaque];
+        url : string;
         mutable seq : int option;
         mutable heartbeat_interval : float option;
         mutable acked : bool;
         mutable session_id : string option;
         mutable resume_gateway_url : string option;
+        mutable established : bool;
     } [@@deriving show]
 
-    let connect ~(sw : Eio.Switch.t) ~(net : 'a Eio.Net.t)
-            ~(url : string) ~(id : int) ~(num_shards : int) ~(token : string)
-            ~(intents : int) : t =
-        let conn =
-            P_ws.connect ~sw ~net
-                ~url:(P_ws.gateway_url ~url ~shard:id ~num_shards)
-        in
-        { id; num_shards; token; intents; conn; seq = None;
+    let connect ~(url : string) ~(id : int) ~(num_shards : int)
+            ~(token : string) ~(intents : int) : t =
+        { id; num_shards; token; intents; url; seq = None;
           heartbeat_interval = None; acked = true; session_id = None;
-          resume_gateway_url = None }
+          resume_gateway_url = None; established = false }
 
-    let read_hello (t : t) : unit =
-        match P_ws.recv t.conn with
+    let read_hello (conn : P_ws.t) (t : t) : unit =
+        match P_ws.recv conn with
         | P_ws.Closed _ ->
             failwith (Printf.sprintf "shard %d: gateway closed before hello" t.id)
         | P_ws.Data s ->
@@ -118,7 +117,7 @@ include (struct
                      (Printf.sprintf "shard %d: expected hello, got op %d" t.id
                         (int_of_op op)))
 
-    let identify (t : t) : unit =
+    let identify (conn : P_ws.t) (t : t) : unit =
         let properties =
             `Assoc
                 [ ("os", `String "linux");
@@ -133,24 +132,37 @@ include (struct
                   ("properties", properties) ]
         in
         let payload = `Assoc [ ("op", `Int (int_of_op Identify)); ("d", d) ] in
-        P_ws.send_text t.conn (Yojson.Safe.to_string payload)
+        P_ws.send_text conn (Yojson.Safe.to_string payload)
 
-    let send_heartbeat (t : t) : unit =
+    let resume (conn : P_ws.t) (t : t) : unit =
+        match t.session_id, t.seq with
+        | Some session_id, Some seq ->
+            let d =
+                `Assoc
+                    [ ("token", `String t.token);
+                      ("session_id", `String session_id);
+                      ("seq", `Int seq) ]
+            in
+            let payload = `Assoc [ ("op", `Int (int_of_op Resume)); ("d", d) ] in
+            P_ws.send_text conn (Yojson.Safe.to_string payload)
+        | _ -> identify conn t
+
+    let send_heartbeat (conn : P_ws.t) (t : t) : unit =
         let d = match t.seq with Some s -> `Int s | None -> `Null in
         let payload = `Assoc [ ("op", `Int (int_of_op Heartbeat)); ("d", d) ] in
-        P_ws.send_text t.conn (Yojson.Safe.to_string payload);
+        P_ws.send_text conn (Yojson.Safe.to_string payload);
         t.acked <- false
 
-    let heartbeat_loop clock (t : t) : unit =
+    let heartbeat_loop clock (conn : P_ws.t) (t : t) : unit =
         match t.heartbeat_interval with
         | None -> ()
         | Some interval ->
             Eio.Time.sleep clock (interval *. Random.float 1.);
             let rec loop first =
                 if (not first) && not t.acked then
-                    P_ws.close t.conn
+                    P_ws.close conn
                 else begin
-                    send_heartbeat t;
+                    send_heartbeat conn t;
                     Eio.Time.sleep clock interval;
                     loop false
                 end
@@ -173,11 +185,16 @@ include (struct
         t.resume_gateway_url <- Some ready.resume_gateway_url;
         ready
 
-    let listen on_ready (t : t) : unit =
+    type close_reason =
+        | Reconnect_requested
+        | Session_invalid of bool
+        | Socket_closed of P_ws.close_code * string
+
+    let listen on_ready (conn : P_ws.t) (t : t) : close_reason =
         let open Yojson.Safe.Util in
         let rec loop () =
-            match P_ws.recv t.conn with
-            | P_ws.Closed _ -> ()
+            match P_ws.recv conn with
+            | P_ws.Closed (code, reason) -> Socket_closed (code, reason)
             | P_ws.Data s ->
                 let json = Yojson.Safe.from_string s in
                 (match op_of_int (json |> member "op" |> to_int) with
@@ -185,7 +202,7 @@ include (struct
                      t.acked <- true;
                      loop ()
                  | Heartbeat ->
-                     send_heartbeat t;
+                     send_heartbeat conn t;
                      loop ()
                  | Dispatch ->
                      (match json |> member "s" |> to_int_option with
@@ -194,21 +211,81 @@ include (struct
                      (match json |> member "t" |> to_string_option with
                       | Some "READY" ->
                           let ready = handle_ready t (json |> member "d") in
+                          t.established <- true;
                           (match on_ready with
                            | Some f -> f ready
                            | None -> ())
+                      | Some "RESUMED" -> t.established <- true
                       | _ -> ());
                      loop ()
-                 | Reconnect | Invalid_session -> ()
+                 | Reconnect -> Reconnect_requested
+                 | Invalid_session ->
+                     let resumable =
+                         match json |> member "d" with `Bool b -> b | _ -> false
+                     in
+                     Session_invalid resumable
                  | _ -> loop ())
         in
         loop ()
 
-    let run ?on_ready clock (t : t) : unit =
-        read_hello t;
-        identify t;
-        Eio.Switch.run @@ fun sw ->
-        Eio.Fiber.fork ~sw (fun () -> heartbeat_loop clock t);
-        listen on_ready t
+    let base_delay : float = 1.
+    let max_delay : float = 60.
+
+    let fatal_close = function
+        | P_ws.Authentication_failed
+        | P_ws.Invalid_shard
+        | P_ws.Sharding_required
+        | P_ws.Invalid_api_version
+        | P_ws.Invalid_intents
+        | P_ws.Disallowed_intents -> true
+        | _ -> false
+
+    let clear_session (t : t) : unit =
+        t.session_id <- None;
+        t.resume_gateway_url <- None;
+        t.seq <- None
+
+    let run ?on_ready ~(net : 'a Eio.Net.t) clock (t : t) : unit =
+        let jitter d = d *. (0.5 +. Random.float 1.) in
+        let rec loop delay =
+            let url =
+                match t.session_id, t.resume_gateway_url with
+                | Some _, Some r -> r
+                | _ -> t.url
+            in
+            let full =
+                P_ws.gateway_url ~url ~shard:t.id ~num_shards:t.num_shards
+            in
+            t.established <- false;
+            t.acked <- true;
+            let reason =
+                try
+                    Eio.Switch.run @@ fun sw ->
+                    let conn = P_ws.connect ~sw ~net ~url:full in
+                    read_hello conn t;
+                    Eio.Fiber.fork ~sw (fun () -> heartbeat_loop clock conn t);
+                    resume conn t;
+                    listen on_ready conn t
+                with exn -> Socket_closed (P_ws.Abnormal, Printexc.to_string exn)
+            in
+            match reason with
+            | Socket_closed (code, _) when fatal_close code -> ()
+            | _ ->
+                let delay =
+                    if t.established then base_delay
+                    else min max_delay (delay *. 2.)
+                in
+                (match reason with
+                 | Session_invalid false ->
+                     clear_session t;
+                     Eio.Time.sleep clock (1. +. Random.float 4.)
+                 | Socket_closed (P_ws.Invalid_seq, _)
+                 | Socket_closed (P_ws.Session_timed_out, _) ->
+                     clear_session t;
+                     Eio.Time.sleep clock (jitter delay)
+                 | _ -> Eio.Time.sleep clock (jitter delay));
+                loop delay
+        in
+        loop base_delay
 
 end : Shard)

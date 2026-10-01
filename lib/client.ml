@@ -136,7 +136,7 @@ include (struct
         let rec spawn i =
             if i < info.shards then begin
                 let shard =
-                    Discord_private.P_shard.connect ~sw ~net ~url:info.url
+                    Discord_private.P_shard.connect ~url:info.url
                         ~id:i ~num_shards:info.shards ~token ~intents:c.intents
                 in
                 Eio.Mutex.use_rw ~protect:true c.shards_mutex (fun () ->
@@ -147,8 +147,8 @@ include (struct
                             Eio.Mutex.use_rw ~protect:true c.shards_mutex (fun () ->
                                 Hashtbl.remove c.shards i))
                         (fun () ->
-                            Discord_private.P_shard.run ~on_ready:handle_ready
-                                clock shard));
+                            Discord_private.P_shard.run ~net
+                                ~on_ready:handle_ready clock shard));
                 if (i + 1) mod info.max_concurrency = 0 then
                     Eio.Time.sleep clock 5.;
                 spawn (i + 1)
