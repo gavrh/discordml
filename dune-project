@@ -7,7 +7,7 @@
 
 (authors "Gavin Holmes")
 (maintainers "Gavin Holmes")
-(license LICENSE)
+(license MIT)
 
 ; (documentation https://url/to/documentation)
 

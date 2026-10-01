@@ -4,7 +4,7 @@ synopsis: "Discord API library"
 description: "Discord API library for OCaml"
 maintainer: ["Gavin Holmes"]
 authors: ["Gavin Holmes"]
-license: "LICENSE"
+license: "MIT"
 tags: ["discord"]
 homepage: "https://github.com/gavrh/discordml"
 bug-reports: "https://github.com/gavrh/discordml/issues"
