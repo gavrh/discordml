@@ -7,10 +7,12 @@ let token : string =
 let client = Discord.Client.create Discord.Intent.standard
 
 let () =
-    Discord.Client.on_event client Discord.Event.Ready (fun ctx payload ->
-        let () = print_endline (Yojson.Safe.show payload) in
-        match Discord.Client.id ctx with
-        | Some id -> Printf.printf "ready as %s\n%!" id
+    Discord.Client.on_event client Discord.Event.Ready (fun client payload ->
+        match Discord.Client.user client with
+        | Some user -> 
+                Printf.printf "%s (%s) is ready!\n%!"
+                (Discord.User.username user)
+                (Discord.User.id user)
         | None -> ())
 
 let () =
