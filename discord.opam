@@ -10,7 +10,7 @@ homepage: "https://github.com/gavrh/discordml"
 bug-reports: "https://github.com/gavrh/discordml/issues"
 depends: [
   "dune" {>= "3.24"}
-  "ocaml"
+  "ocaml" {>= "5.0"}
   "eio"
   "cohttp-eio"
   "http"
@@ -21,6 +21,10 @@ depends: [
   "yojson"
   "ppx_deriving"
   "ppx_deriving_yojson"
+  "dotenv"
+  "domain-name"
+  "digestif"
+  "mirage-crypto-rng"
   "odoc" {with-doc}
 ]
 build: [

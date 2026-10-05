@@ -16,7 +16,7 @@
   (synopsis "Discord API library")
   (description "Discord API library for OCaml")
   (depends
-    ocaml
+    (ocaml (>= 5.0))
     eio
     cohttp-eio
     http
@@ -26,7 +26,11 @@
     ca-certs
     yojson
     ppx_deriving
-    ppx_deriving_yojson)
+    ppx_deriving_yojson
+    dotenv
+    domain-name
+    digestif
+    mirage-crypto-rng)
   (tags
     ("discord")))
 
