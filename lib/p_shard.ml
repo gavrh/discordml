@@ -219,9 +219,36 @@ include (struct
         t.resume_gateway_url <- None;
         t.seq <- None
 
+    type action = Stop | Reconnect
+
+    type delay = Backoff | Jitter of float * float
+
+    type plan = { action : action; clear_session : bool; delay : delay }
+
+    let plan_of_reason ~(resume_failed : bool) (reason : close_reason) : plan =
+        match reason with
+        | Reconnect_requested ->
+            { action = Reconnect; clear_session = false; delay = Backoff }
+        | Session_invalid true ->
+            { action = Reconnect; clear_session = false; delay = Jitter (1., 5.) }
+        | Session_invalid false ->
+            { action = Reconnect; clear_session = true; delay = Jitter (1., 5.) }
+        | Socket_closed (code, _) when fatal_close code ->
+            { action = Stop; clear_session = false; delay = Backoff }
+        | Socket_closed (P_ws.Invalid_seq, _)
+        | Socket_closed (P_ws.Session_timed_out, _) ->
+            { action = Reconnect; clear_session = true; delay = Backoff }
+        | Socket_closed (P_ws.Rate_limited, _) ->
+            { action = Reconnect; clear_session = false; delay = Jitter (1., 5.) }
+        | Socket_closed _ when resume_failed ->
+            { action = Reconnect; clear_session = true; delay = Backoff }
+        | Socket_closed _ ->
+            { action = Reconnect; clear_session = false; delay = Backoff }
+
     let run ~dispatch ~(net : 'a Eio.Net.t) clock (t : t) : unit =
         let jitter d = d *. (0.5 +. Random.float 1.) in
         let rec loop delay =
+            let resume_attempted = t.session_id <> None && t.seq <> None in
             let url =
                 match t.session_id, t.resume_gateway_url with
                 | Some _, Some r -> r
@@ -242,29 +269,30 @@ include (struct
                     listen dispatch conn t
                 with exn -> Socket_closed (P_ws.Abnormal, Printexc.to_string exn)
             in
-            match reason with
-            | Socket_closed (P_ws.Disallowed_intents, _) ->
-                prerr_endline
-                    "shard: intents not enabled for this application (enable \
-                     privileged intents in the Discord developer portal)"
-            | Socket_closed (P_ws.Authentication_failed, _) ->
-                prerr_endline "shard: authentication failed (check the bot token)"
-            | Socket_closed (code, _) when fatal_close code -> ()
-            | _ ->
-                let delay =
-                    if t.established then base_delay
-                    else min max_delay (delay *. 2.)
-                in
+            let resume_failed = resume_attempted && not t.established in
+            let plan = plan_of_reason ~resume_failed reason in
+            match plan.action with
+            | Stop ->
                 (match reason with
-                 | Session_invalid false ->
-                     clear_session t;
-                     Eio.Time.sleep clock (1. +. Random.float 4.)
-                 | Socket_closed (P_ws.Invalid_seq, _)
-                 | Socket_closed (P_ws.Session_timed_out, _) ->
-                     clear_session t;
-                     Eio.Time.sleep clock (jitter delay)
-                 | _ -> Eio.Time.sleep clock (jitter delay));
-                loop delay
+                 | Socket_closed (P_ws.Disallowed_intents, _) ->
+                     prerr_endline
+                         "shard: intents not enabled for this application (enable \
+                          privileged intents in the Discord developer portal)"
+                 | Socket_closed (P_ws.Authentication_failed, _) ->
+                     prerr_endline
+                         "shard: authentication failed (check the bot token)"
+                 | _ -> ())
+            | Reconnect ->
+                let wait = if t.established then base_delay else delay in
+                let next_delay = min max_delay (wait *. 2.) in
+                if plan.clear_session then clear_session t;
+                let seconds =
+                    match plan.delay with
+                    | Backoff -> jitter wait
+                    | Jitter (lo, hi) -> lo +. Random.float (hi -. lo)
+                in
+                Eio.Time.sleep clock seconds;
+                loop next_delay
         in
         loop base_delay
 
