@@ -100,7 +100,7 @@ include (struct
         guilds_mutex : Eio.Mutex.t [@opaque];
         shards : (int, Discord_private.P_shard.t) Hashtbl.t [@printer fun fmt tbl -> Format.fprintf fmt "[ ...%d ]" (Hashtbl.length tbl)];
         shards_mutex : Eio.Mutex.t [@opaque];
-        handlers : (Event.t, (t -> unit) list) Hashtbl.t Atomic.t [@opaque];
+        handlers : (Discord_private.P_event.t, (t -> unit) list) Hashtbl.t Atomic.t [@opaque];
         message_handlers : (t -> Message.t -> unit) list Atomic.t [@opaque];
         mutable user : User.t option [@printer fun fmt u ->
             match u with
@@ -121,7 +121,7 @@ include (struct
         | Some r -> r
         | None -> failwith "client: not started"
 
-    let add_handler (c : t) (event : Event.t) (f : t -> unit) : unit =
+    let add_handler (c : t) (event : Discord_private.P_event.t) (f : t -> unit) : unit =
         let rec add () =
             let old = Atomic.get c.handlers in
             let tbl = Hashtbl.copy old in
@@ -142,238 +142,238 @@ include (struct
         add ()
 
     let on_ready (c : t) (f : t -> unit) : unit =
-        add_handler c Event.Ready f
+        add_handler c Discord_private.P_event.Ready f
 
     let on_resumed (c : t) (f : t -> unit) : unit =
-        add_handler c Event.Resumed f
+        add_handler c Discord_private.P_event.Resumed f
 
     let on_application_command_permissions_update (c : t) (f : t -> unit) : unit =
-        add_handler c Event.Application_command_permissions_update f
+        add_handler c Discord_private.P_event.Application_command_permissions_update f
 
     let on_auto_moderation_rule_create (c : t) (f : t -> unit) : unit =
-        add_handler c Event.Auto_moderation_rule_create f
+        add_handler c Discord_private.P_event.Auto_moderation_rule_create f
 
     let on_auto_moderation_rule_update (c : t) (f : t -> unit) : unit =
-        add_handler c Event.Auto_moderation_rule_update f
+        add_handler c Discord_private.P_event.Auto_moderation_rule_update f
 
     let on_auto_moderation_rule_delete (c : t) (f : t -> unit) : unit =
-        add_handler c Event.Auto_moderation_rule_delete f
+        add_handler c Discord_private.P_event.Auto_moderation_rule_delete f
 
     let on_auto_moderation_action_execution (c : t) (f : t -> unit) : unit =
-        add_handler c Event.Auto_moderation_action_execution f
+        add_handler c Discord_private.P_event.Auto_moderation_action_execution f
 
     let on_channel_create (c : t) (f : t -> unit) : unit =
-        add_handler c Event.Channel_create f
+        add_handler c Discord_private.P_event.Channel_create f
 
     let on_channel_update (c : t) (f : t -> unit) : unit =
-        add_handler c Event.Channel_update f
+        add_handler c Discord_private.P_event.Channel_update f
 
     let on_channel_delete (c : t) (f : t -> unit) : unit =
-        add_handler c Event.Channel_delete f
+        add_handler c Discord_private.P_event.Channel_delete f
 
     let on_channel_info (c : t) (f : t -> unit) : unit =
-        add_handler c Event.Channel_info f
+        add_handler c Discord_private.P_event.Channel_info f
 
     let on_channel_pins_update (c : t) (f : t -> unit) : unit =
-        add_handler c Event.Channel_pins_update f
+        add_handler c Discord_private.P_event.Channel_pins_update f
 
     let on_thread_create (c : t) (f : t -> unit) : unit =
-        add_handler c Event.Thread_create f
+        add_handler c Discord_private.P_event.Thread_create f
 
     let on_thread_update (c : t) (f : t -> unit) : unit =
-        add_handler c Event.Thread_update f
+        add_handler c Discord_private.P_event.Thread_update f
 
     let on_thread_delete (c : t) (f : t -> unit) : unit =
-        add_handler c Event.Thread_delete f
+        add_handler c Discord_private.P_event.Thread_delete f
 
     let on_thread_list_sync (c : t) (f : t -> unit) : unit =
-        add_handler c Event.Thread_list_sync f
+        add_handler c Discord_private.P_event.Thread_list_sync f
 
     let on_thread_member_update (c : t) (f : t -> unit) : unit =
-        add_handler c Event.Thread_member_update f
+        add_handler c Discord_private.P_event.Thread_member_update f
 
     let on_thread_members_update (c : t) (f : t -> unit) : unit =
-        add_handler c Event.Thread_members_update f
+        add_handler c Discord_private.P_event.Thread_members_update f
 
     let on_voice_channel_status_update (c : t) (f : t -> unit) : unit =
-        add_handler c Event.Voice_channel_status_update f
+        add_handler c Discord_private.P_event.Voice_channel_status_update f
 
     let on_voice_channel_start_time_update (c : t) (f : t -> unit) : unit =
-        add_handler c Event.Voice_channel_start_time_update f
+        add_handler c Discord_private.P_event.Voice_channel_start_time_update f
 
     let on_entitlement_create (c : t) (f : t -> unit) : unit =
-        add_handler c Event.Entitlement_create f
+        add_handler c Discord_private.P_event.Entitlement_create f
 
     let on_entitlement_update (c : t) (f : t -> unit) : unit =
-        add_handler c Event.Entitlement_update f
+        add_handler c Discord_private.P_event.Entitlement_update f
 
     let on_entitlement_delete (c : t) (f : t -> unit) : unit =
-        add_handler c Event.Entitlement_delete f
+        add_handler c Discord_private.P_event.Entitlement_delete f
 
     let on_subscription_create (c : t) (f : t -> unit) : unit =
-        add_handler c Event.Subscription_create f
+        add_handler c Discord_private.P_event.Subscription_create f
 
     let on_subscription_update (c : t) (f : t -> unit) : unit =
-        add_handler c Event.Subscription_update f
+        add_handler c Discord_private.P_event.Subscription_update f
 
     let on_subscription_delete (c : t) (f : t -> unit) : unit =
-        add_handler c Event.Subscription_delete f
+        add_handler c Discord_private.P_event.Subscription_delete f
 
     let on_guild_create (c : t) (f : t -> unit) : unit =
-        add_handler c Event.Guild_create f
+        add_handler c Discord_private.P_event.Guild_create f
 
     let on_guild_update (c : t) (f : t -> unit) : unit =
-        add_handler c Event.Guild_update f
+        add_handler c Discord_private.P_event.Guild_update f
 
     let on_guild_delete (c : t) (f : t -> unit) : unit =
-        add_handler c Event.Guild_delete f
+        add_handler c Discord_private.P_event.Guild_delete f
 
     let on_guild_audit_log_entry_create (c : t) (f : t -> unit) : unit =
-        add_handler c Event.Guild_audit_log_entry_create f
+        add_handler c Discord_private.P_event.Guild_audit_log_entry_create f
 
     let on_guild_ban_add (c : t) (f : t -> unit) : unit =
-        add_handler c Event.Guild_ban_add f
+        add_handler c Discord_private.P_event.Guild_ban_add f
 
     let on_guild_ban_remove (c : t) (f : t -> unit) : unit =
-        add_handler c Event.Guild_ban_remove f
+        add_handler c Discord_private.P_event.Guild_ban_remove f
 
     let on_guild_emojis_update (c : t) (f : t -> unit) : unit =
-        add_handler c Event.Guild_emojis_update f
+        add_handler c Discord_private.P_event.Guild_emojis_update f
 
     let on_guild_stickers_update (c : t) (f : t -> unit) : unit =
-        add_handler c Event.Guild_stickers_update f
+        add_handler c Discord_private.P_event.Guild_stickers_update f
 
     let on_guild_integrations_update (c : t) (f : t -> unit) : unit =
-        add_handler c Event.Guild_integrations_update f
+        add_handler c Discord_private.P_event.Guild_integrations_update f
 
     let on_guild_member_add (c : t) (f : t -> unit) : unit =
-        add_handler c Event.Guild_member_add f
+        add_handler c Discord_private.P_event.Guild_member_add f
 
     let on_guild_member_remove (c : t) (f : t -> unit) : unit =
-        add_handler c Event.Guild_member_remove f
+        add_handler c Discord_private.P_event.Guild_member_remove f
 
     let on_guild_member_update (c : t) (f : t -> unit) : unit =
-        add_handler c Event.Guild_member_update f
+        add_handler c Discord_private.P_event.Guild_member_update f
 
     let on_guild_members_chunk (c : t) (f : t -> unit) : unit =
-        add_handler c Event.Guild_members_chunk f
+        add_handler c Discord_private.P_event.Guild_members_chunk f
 
     let on_guild_role_create (c : t) (f : t -> unit) : unit =
-        add_handler c Event.Guild_role_create f
+        add_handler c Discord_private.P_event.Guild_role_create f
 
     let on_guild_role_update (c : t) (f : t -> unit) : unit =
-        add_handler c Event.Guild_role_update f
+        add_handler c Discord_private.P_event.Guild_role_update f
 
     let on_guild_role_delete (c : t) (f : t -> unit) : unit =
-        add_handler c Event.Guild_role_delete f
+        add_handler c Discord_private.P_event.Guild_role_delete f
 
     let on_guild_scheduled_event_create (c : t) (f : t -> unit) : unit =
-        add_handler c Event.Guild_scheduled_event_create f
+        add_handler c Discord_private.P_event.Guild_scheduled_event_create f
 
     let on_guild_scheduled_event_update (c : t) (f : t -> unit) : unit =
-        add_handler c Event.Guild_scheduled_event_update f
+        add_handler c Discord_private.P_event.Guild_scheduled_event_update f
 
     let on_guild_scheduled_event_delete (c : t) (f : t -> unit) : unit =
-        add_handler c Event.Guild_scheduled_event_delete f
+        add_handler c Discord_private.P_event.Guild_scheduled_event_delete f
 
     let on_guild_scheduled_event_user_add (c : t) (f : t -> unit) : unit =
-        add_handler c Event.Guild_scheduled_event_user_add f
+        add_handler c Discord_private.P_event.Guild_scheduled_event_user_add f
 
     let on_guild_scheduled_event_user_remove (c : t) (f : t -> unit) : unit =
-        add_handler c Event.Guild_scheduled_event_user_remove f
+        add_handler c Discord_private.P_event.Guild_scheduled_event_user_remove f
 
     let on_guild_soundboard_sound_create (c : t) (f : t -> unit) : unit =
-        add_handler c Event.Guild_soundboard_sound_create f
+        add_handler c Discord_private.P_event.Guild_soundboard_sound_create f
 
     let on_guild_soundboard_sound_update (c : t) (f : t -> unit) : unit =
-        add_handler c Event.Guild_soundboard_sound_update f
+        add_handler c Discord_private.P_event.Guild_soundboard_sound_update f
 
     let on_guild_soundboard_sound_delete (c : t) (f : t -> unit) : unit =
-        add_handler c Event.Guild_soundboard_sound_delete f
+        add_handler c Discord_private.P_event.Guild_soundboard_sound_delete f
 
     let on_guild_soundboard_sounds_update (c : t) (f : t -> unit) : unit =
-        add_handler c Event.Guild_soundboard_sounds_update f
+        add_handler c Discord_private.P_event.Guild_soundboard_sounds_update f
 
     let on_soundboard_sounds (c : t) (f : t -> unit) : unit =
-        add_handler c Event.Soundboard_sounds f
+        add_handler c Discord_private.P_event.Soundboard_sounds f
 
     let on_integration_create (c : t) (f : t -> unit) : unit =
-        add_handler c Event.Integration_create f
+        add_handler c Discord_private.P_event.Integration_create f
 
     let on_integration_update (c : t) (f : t -> unit) : unit =
-        add_handler c Event.Integration_update f
+        add_handler c Discord_private.P_event.Integration_update f
 
     let on_integration_delete (c : t) (f : t -> unit) : unit =
-        add_handler c Event.Integration_delete f
+        add_handler c Discord_private.P_event.Integration_delete f
 
     let on_interaction_create (c : t) (f : t -> unit) : unit =
-        add_handler c Event.Interaction_create f
+        add_handler c Discord_private.P_event.Interaction_create f
 
     let on_invite_create (c : t) (f : t -> unit) : unit =
-        add_handler c Event.Invite_create f
+        add_handler c Discord_private.P_event.Invite_create f
 
     let on_invite_delete (c : t) (f : t -> unit) : unit =
-        add_handler c Event.Invite_delete f
+        add_handler c Discord_private.P_event.Invite_delete f
 
     let on_message (c : t) (f : t -> Message.t -> unit) : unit =
         add_message_handler c f
 
     let on_message_update (c : t) (f : t -> unit) : unit =
-        add_handler c Event.Message_update f
+        add_handler c Discord_private.P_event.Message_update f
 
     let on_message_delete (c : t) (f : t -> unit) : unit =
-        add_handler c Event.Message_delete f
+        add_handler c Discord_private.P_event.Message_delete f
 
     let on_message_delete_bulk (c : t) (f : t -> unit) : unit =
-        add_handler c Event.Message_delete_bulk f
+        add_handler c Discord_private.P_event.Message_delete_bulk f
 
     let on_message_reaction_add (c : t) (f : t -> unit) : unit =
-        add_handler c Event.Message_reaction_add f
+        add_handler c Discord_private.P_event.Message_reaction_add f
 
     let on_message_reaction_remove (c : t) (f : t -> unit) : unit =
-        add_handler c Event.Message_reaction_remove f
+        add_handler c Discord_private.P_event.Message_reaction_remove f
 
     let on_message_reaction_remove_all (c : t) (f : t -> unit) : unit =
-        add_handler c Event.Message_reaction_remove_all f
+        add_handler c Discord_private.P_event.Message_reaction_remove_all f
 
     let on_message_reaction_remove_emoji (c : t) (f : t -> unit) : unit =
-        add_handler c Event.Message_reaction_remove_emoji f
+        add_handler c Discord_private.P_event.Message_reaction_remove_emoji f
 
     let on_message_poll_vote_add (c : t) (f : t -> unit) : unit =
-        add_handler c Event.Message_poll_vote_add f
+        add_handler c Discord_private.P_event.Message_poll_vote_add f
 
     let on_message_poll_vote_remove (c : t) (f : t -> unit) : unit =
-        add_handler c Event.Message_poll_vote_remove f
+        add_handler c Discord_private.P_event.Message_poll_vote_remove f
 
     let on_presence_update (c : t) (f : t -> unit) : unit =
-        add_handler c Event.Presence_update f
+        add_handler c Discord_private.P_event.Presence_update f
 
     let on_stage_instance_create (c : t) (f : t -> unit) : unit =
-        add_handler c Event.Stage_instance_create f
+        add_handler c Discord_private.P_event.Stage_instance_create f
 
     let on_stage_instance_update (c : t) (f : t -> unit) : unit =
-        add_handler c Event.Stage_instance_update f
+        add_handler c Discord_private.P_event.Stage_instance_update f
 
     let on_stage_instance_delete (c : t) (f : t -> unit) : unit =
-        add_handler c Event.Stage_instance_delete f
+        add_handler c Discord_private.P_event.Stage_instance_delete f
 
     let on_typing_start (c : t) (f : t -> unit) : unit =
-        add_handler c Event.Typing_start f
+        add_handler c Discord_private.P_event.Typing_start f
 
     let on_user_update (c : t) (f : t -> unit) : unit =
-        add_handler c Event.User_update f
+        add_handler c Discord_private.P_event.User_update f
 
     let on_voice_channel_effect_send (c : t) (f : t -> unit) : unit =
-        add_handler c Event.Voice_channel_effect_send f
+        add_handler c Discord_private.P_event.Voice_channel_effect_send f
 
     let on_voice_state_update (c : t) (f : t -> unit) : unit =
-        add_handler c Event.Voice_state_update f
+        add_handler c Discord_private.P_event.Voice_state_update f
 
     let on_voice_server_update (c : t) (f : t -> unit) : unit =
-        add_handler c Event.Voice_server_update f
+        add_handler c Discord_private.P_event.Voice_server_update f
 
     let on_webhooks_update (c : t) (f : t -> unit) : unit =
-        add_handler c Event.Webhooks_update f
+        add_handler c Discord_private.P_event.Webhooks_update f
 
 
     let create (i : int) : t = {
@@ -409,9 +409,9 @@ include (struct
         in
         let open Yojson.Safe.Util in
         let dispatch (name : string) (json : Yojson.Safe.t) : unit =
-            match Event.of_string name with
+            match Discord_private.P_event.of_string name with
             | None -> ()
-            | Some Event.Message_create ->
+            | Some Discord_private.P_event.Message_create ->
                 (match Message.of_yojson json with
                  | Ok message ->
                      List.iter
@@ -420,7 +420,7 @@ include (struct
                  | Error _ -> ())
             | Some event ->
                 (match event with
-                 | Event.Ready ->
+                 | Discord_private.P_event.Ready ->
                      (match User.of_yojson (json |> member "user") with
                       | Ok user -> c.user <- Some user
                       | Error _ -> ())
