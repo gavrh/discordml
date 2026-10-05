@@ -137,15 +137,16 @@ include (struct
         P_ws.send_text conn (Yojson.Safe.to_string payload);
         t.acked <- false
 
-    let heartbeat_loop clock (conn : P_ws.t) (t : t) : unit =
+    let heartbeat_loop clock (sw : Eio.Switch.t) (conn : P_ws.t) (t : t) : unit =
         match t.heartbeat_interval with
         | None -> ()
         | Some interval ->
             Eio.Time.sleep clock (interval *. Random.float 1.);
             let rec loop first =
-                if (not first) && not t.acked then
-                    P_ws.close conn
-                else begin
+                if (not first) && not t.acked then begin
+                    P_ws.close conn;
+                    Eio.Switch.fail sw (Failure "heartbeat ack timeout")
+                end else begin
                     send_heartbeat conn t;
                     Eio.Time.sleep clock interval;
                     loop false
@@ -264,7 +265,7 @@ include (struct
                     Eio.Switch.run @@ fun sw ->
                     let conn = P_ws.connect ~sw ~net ~url:full in
                     read_hello conn t;
-                    Eio.Fiber.fork ~sw (fun () -> heartbeat_loop clock conn t);
+                    Eio.Fiber.fork ~sw (fun () -> heartbeat_loop clock sw conn t);
                     resume conn t;
                     listen dispatch conn t
                 with exn -> Socket_closed (P_ws.Abnormal, Printexc.to_string exn)
