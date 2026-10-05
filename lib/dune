@@ -1,7 +1,7 @@
 (library
  (name discord)
  (public_name discord)
- (modules channel client event guild intent rest user)
+ (modules channel client event guild intent message rest user)
  (libraries discord_private eio eio.unix cohttp-eio http uri tls tls-eio
    ca-certs domain-name mirage-crypto-rng mirage-crypto-rng.unix yojson)
  (preprocess
