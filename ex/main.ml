@@ -7,7 +7,7 @@ let token : string =
 let client = Discord.Client.create Discord.Intent.standard
 
 let () =
-    Discord.Client.on_event client Discord.Event.Ready (fun client payload ->
+    Discord.Client.on_ready client (fun client ->
         match Discord.Client.user client with
         | Some user -> 
                 Printf.printf "%s (%s) is ready!\n%!"
