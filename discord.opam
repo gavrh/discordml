@@ -10,8 +10,9 @@ homepage: "https://github.com/gavrh/discordml"
 bug-reports: "https://github.com/gavrh/discordml/issues"
 depends: [
   "dune" {>= "3.24"}
-  "ocaml" {>= "5.0"}
+  "ocaml" {>= "5.2"}
   "eio"
+  "eio_main"
   "cohttp-eio"
   "http"
   "uri"

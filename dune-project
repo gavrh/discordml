@@ -16,8 +16,9 @@
   (synopsis "Discord API library")
   (description "Discord API library for OCaml")
   (depends
-    (ocaml (>= 5.0))
+    (ocaml (>= 5.2))
     eio
+    eio_main
     cohttp-eio
     http
     uri
