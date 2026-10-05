@@ -8,12 +8,6 @@ module type Rest = sig
         | Patch
         | Delete
 
-    type gateway_info = {
-        url : string;
-        shards : int;
-        max_concurrency : int;
-    }
-
     val create :
         sw:Eio.Switch.t ->
         net:'a Eio.Net.t ->
@@ -28,8 +22,6 @@ module type Rest = sig
         meth ->
         string ->
         int * string
-
-    val gateway_bot : t -> gateway_info
 end
 
 include (struct
@@ -40,12 +32,6 @@ include (struct
         | Put
         | Patch
         | Delete
-
-    type gateway_info = {
-        url : string;
-        shards : int;
-        max_concurrency : int;
-    } [@@deriving show]
 
     type bucket = {
         mutable remaining : int;
@@ -186,17 +172,5 @@ include (struct
             else (status, body)
         in
         attempt 0
-
-    let gateway_bot (t : t) : gateway_info =
-        let code, body = request t Get "/gateway/bot" in
-        if code <> 200 then
-            failwith (Printf.sprintf "gateway/bot: HTTP %d: %s" code body);
-        let json = Yojson.Safe.from_string body in
-        let open Yojson.Safe.Util in
-        { url = json |> member "url" |> to_string;
-          shards = json |> member "shards" |> to_int;
-          max_concurrency =
-            json |> member "session_start_limit" |> member "max_concurrency"
-            |> to_int }
 
 end : Rest)

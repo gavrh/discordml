@@ -1,16 +1,17 @@
 (library
  (name discord)
  (public_name discord)
- (modules channel client event guild intent user)
- (libraries discord_private eio eio.unix)
+ (modules channel client event guild intent rest user)
+ (libraries discord_private eio eio.unix cohttp-eio http uri tls tls-eio
+   ca-certs domain-name mirage-crypto-rng mirage-crypto-rng.unix yojson)
  (preprocess
   (pps ppx_deriving.show ppx_deriving.eq ppx_deriving_yojson)))
 
 (library
  (name discord_private)
  (package discord)
- (modules p_rest p_shard p_ws)
- (libraries eio cohttp-eio http uri tls tls-eio ca-certs domain-name digestif
-   mirage-crypto-rng mirage-crypto-rng.unix yojson)
+ (modules p_shard p_ws)
+ (libraries eio tls tls-eio ca-certs domain-name digestif mirage-crypto-rng
+   mirage-crypto-rng.unix yojson)
  (preprocess
   (pps ppx_deriving.show ppx_deriving.eq ppx_deriving_yojson)))

@@ -8,6 +8,7 @@ module type Client = sig
 
     val guild : t -> string -> Guild.t option
     val user : t -> User.t option
+    val rest : t -> Rest.t
 
     val on_event : t -> Event.t -> (t -> Yojson.Safe.t -> unit) -> unit
 
@@ -28,7 +29,7 @@ include (struct
             match u with
             | Some u -> Format.pp_print_string fmt (User.show u)
             | None -> Format.pp_print_string fmt "None"];
-        mutable rest : Discord_private.P_rest.t option [@opaque];
+        mutable rest : Rest.t option [@opaque];
     } [@@deriving show]
 
     let token (c : t) : string option = c.token
@@ -37,6 +38,11 @@ include (struct
         Eio.Mutex.use_ro c.guilds_mutex (fun () -> Hashtbl.find_opt c.guilds gid)
 
     let user (c : t) : User.t option = c.user
+
+    let rest (c : t) : Rest.t =
+        match c.rest with
+        | Some r -> r
+        | None -> failwith "client: not started"
 
     let on_event (c : t) (event : Event.t)
             (f : t -> Yojson.Safe.t -> unit) : unit =
@@ -68,9 +74,19 @@ include (struct
         let clock = Eio.Stdenv.clock env in
         Eio.Switch.run @@ fun sw ->
         c.token <- Some token;
-        let rest = Discord_private.P_rest.create ~sw ~net ~clock ~token in
+        let rest = Rest.create ~sw ~net ~clock ~token in
         c.rest <- Some rest;
-        let info = Discord_private.P_rest.gateway_bot rest in
+        let code, body = Rest.request rest Rest.Get "/gateway/bot" in
+        if code <> 200 then
+            failwith (Printf.sprintf "gateway/bot: HTTP %d: %s" code body);
+        let url, shards, max_concurrency =
+            let json = Yojson.Safe.from_string body in
+            let open Yojson.Safe.Util in
+            ( json |> member "url" |> to_string,
+              json |> member "shards" |> to_int,
+              json |> member "session_start_limit" |> member "max_concurrency"
+              |> to_int )
+        in
         let open Yojson.Safe.Util in
         let dispatch (name : string) (json : Yojson.Safe.t) : unit =
             match Event.of_string name with
@@ -93,10 +109,10 @@ include (struct
                     handlers
         in
         let rec spawn i =
-            if i < info.shards then begin
+            if i < shards then begin
                 let shard =
-                    Discord_private.P_shard.connect ~url:info.url
-                        ~id:i ~num_shards:info.shards ~token ~intents:c.intents
+                    Discord_private.P_shard.connect ~url
+                        ~id:i ~num_shards:shards ~token ~intents:c.intents
                 in
                 Eio.Mutex.use_rw ~protect:true c.shards_mutex (fun () ->
                     Hashtbl.replace c.shards i shard);
@@ -108,7 +124,7 @@ include (struct
                         (fun () ->
                             Discord_private.P_shard.run ~net ~dispatch clock
                                 shard));
-                if (i + 1) mod info.max_concurrency = 0 then
+                if (i + 1) mod max_concurrency = 0 then
                     Eio.Time.sleep clock 5.;
                 spawn (i + 1)
             end
