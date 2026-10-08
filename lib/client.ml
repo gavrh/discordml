@@ -396,17 +396,9 @@ include (struct
         c.token <- Some token;
         let rest = Rest.create ~sw ~net ~clock ~token in
         c.rest <- Some rest;
-        let code, body = Rest.request rest Rest.Get "/gateway/bot" in
-        if code <> 200 then
-            failwith (Printf.sprintf "gateway/bot: HTTP %d: %s" code body);
-        let url, shards, max_concurrency =
-            let json = Yojson.Safe.from_string body in
-            let open Yojson.Safe.Util in
-            ( json |> member "url" |> to_string,
-              json |> member "shards" |> to_int,
-              json |> member "session_start_limit" |> member "max_concurrency"
-              |> to_int )
-        in
+        let info = Rest.gateway_bot rest in
+        if info.shards > info.sessions_remaining then
+            Eio.Time.sleep clock info.sessions_reset_after;
         let open Yojson.Safe.Util in
         let dispatch (name : string) (json : Yojson.Safe.t) : unit =
             match Discord_private.P_event.of_string name with
@@ -435,10 +427,10 @@ include (struct
                     handlers
         in
         let rec spawn i =
-            if i < shards then begin
+            if i < info.shards then begin
                 let shard =
-                    Discord_private.P_shard.connect ~url
-                        ~id:i ~num_shards:shards ~token ~intents:c.intents
+                    Discord_private.P_shard.connect ~url:info.url
+                        ~id:i ~num_shards:info.shards ~token ~intents:c.intents
                 in
                 Eio.Mutex.use_rw ~protect:true c.shards_mutex (fun () ->
                     Hashtbl.replace c.shards i shard);
@@ -450,7 +442,8 @@ include (struct
                         (fun () ->
                             Discord_private.P_shard.run ~net ~dispatch clock
                                 shard));
-                if (i + 1) mod max_concurrency = 0 then
+                if (i + 1) mod info.max_concurrency = 0
+                   && i + 1 < info.shards then
                     Eio.Time.sleep clock 5.;
                 spawn (i + 1)
             end
