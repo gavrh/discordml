@@ -36,6 +36,9 @@ include (struct
     type bucket = {
         mutable remaining : int;
         mutable reset_at : float;
+        mutable in_flight : int;
+        mutable learned : bool;
+        changed : Eio.Condition.t;
     }
 
     type t = {
@@ -46,6 +49,7 @@ include (struct
         now : unit -> float;
         mutex : Eio.Mutex.t;
         buckets : (string, bucket) Hashtbl.t;
+        bucket_ids : (string, string) Hashtbl.t;
         mutable global_until : float;
     }
 
@@ -81,6 +85,7 @@ include (struct
           now = (fun () -> Eio.Time.now clock);
           mutex = Eio.Mutex.create ();
           buckets = Hashtbl.create 0;
+          bucket_ids = Hashtbl.create 0;
           global_until = 0. }
 
     let meth_name = function
@@ -97,33 +102,113 @@ include (struct
         | Patch -> `PATCH
         | Delete -> `DELETE
 
-    let bucket_key (meth : meth) (path : string) : string =
+    let route_key (meth : meth) (path : string) : string =
+        let path =
+            match String.index_opt path '?' with
+            | Some i -> String.sub path 0 i
+            | None -> path
+        in
         meth_name meth ^ " " ^ path
 
-    let wait_time (t : t) (key : string) : float =
-        Eio.Mutex.use_rw ~protect:true t.mutex (fun () ->
-            let now = t.now () in
-            let global = max 0. (t.global_until -. now) in
-            let bucket =
-                match Hashtbl.find_opt t.buckets key with
-                | Some b when b.remaining <= 0 -> max 0. (b.reset_at -. now)
-                | _ -> 0.
-            in
-            max global bucket)
+    let bucket_for (t : t) (route : string) : bucket =
+        let key =
+            match Hashtbl.find_opt t.bucket_ids route with
+            | Some bucket_id -> bucket_id
+            | None -> route
+        in
+        match Hashtbl.find_opt t.buckets key with
+        | Some bucket -> bucket
+        | None ->
+            let bucket = {
+                remaining = 0;
+                reset_at = 0.;
+                in_flight = 0;
+                learned = false;
+                changed = Eio.Condition.create ();
+            } in
+            Hashtbl.replace t.buckets key bucket;
+            bucket
 
-    let update_bucket (t : t) (key : string) (headers : Http.Header.t) : unit =
-        match
-            Http.Header.get headers "x-ratelimit-remaining",
-            Http.Header.get headers "x-ratelimit-reset-after"
-        with
-        | Some rem, Some reset ->
-            (match int_of_string_opt rem, float_of_string_opt reset with
-             | Some remaining, Some reset_after ->
-                 Eio.Mutex.use_rw ~protect:true t.mutex (fun () ->
-                     Hashtbl.replace t.buckets key
-                         { remaining; reset_at = t.now () +. reset_after })
-             | _ -> ())
-        | _ -> ()
+    let global_wait (t : t) : float =
+        Eio.Mutex.use_rw ~protect:true t.mutex (fun () ->
+            max 0. (t.global_until -. t.now ()))
+
+    let reserve (t : t) (route : string) : bucket =
+        let rec loop () =
+            let action =
+                Eio.Mutex.use_rw ~protect:true t.mutex (fun () ->
+                    let bucket = bucket_for t route in
+                    let now = t.now () in
+                    if not bucket.learned then
+                        if bucket.in_flight = 0 then begin
+                            bucket.in_flight <- 1;
+                            `Reserved bucket
+                        end else begin
+                            Eio.Condition.await bucket.changed t.mutex;
+                            `Retry
+                        end
+                    else if bucket.remaining > 0 then begin
+                        bucket.remaining <- bucket.remaining - 1;
+                        bucket.in_flight <- bucket.in_flight + 1;
+                        `Reserved bucket
+                    end
+                    else if bucket.reset_at <= now then begin
+                        bucket.learned <- false;
+                        bucket.in_flight <- 1;
+                        `Reserved bucket
+                    end
+                    else
+                        `Wait (bucket.reset_at -. now))
+            in
+            match action with
+            | `Reserved bucket -> bucket
+            | `Retry -> loop ()
+            | `Wait delay -> t.sleep delay; loop ()
+        in
+        loop ()
+
+    let finish (t : t) (route : string) (reserved : bucket)
+            (headers : Http.Header.t) : unit =
+        let bucket_id = Http.Header.get headers "x-ratelimit-bucket" in
+        let limit =
+            match
+                Http.Header.get headers "x-ratelimit-remaining",
+                Http.Header.get headers "x-ratelimit-reset-after"
+            with
+            | Some remaining, Some reset_after ->
+                (match int_of_string_opt remaining,
+                       float_of_string_opt reset_after with
+                 | Some remaining, Some reset_after ->
+                     Some (remaining, reset_after)
+                 | _ -> None)
+            | _ -> None
+        in
+        Eio.Mutex.use_rw ~protect:true t.mutex (fun () ->
+            let target =
+                match bucket_id with
+                | Some id ->
+                    Hashtbl.replace t.bucket_ids route id;
+                    let target =
+                        match Hashtbl.find_opt t.buckets id with
+                        | Some bucket -> bucket
+                        | None ->
+                            Hashtbl.replace t.buckets id reserved;
+                            reserved
+                    in
+                    if id <> route then Hashtbl.remove t.buckets route;
+                    target
+                | None -> reserved
+            in
+            (match limit with
+             | Some (remaining, reset_after) ->
+                 target.learned <- true;
+                 target.remaining <- remaining;
+                 target.reset_at <- t.now () +. reset_after
+             | None -> ());
+            reserved.in_flight <- max 0 (reserved.in_flight - 1);
+            Eio.Condition.broadcast reserved.changed;
+            if target != reserved then
+                Eio.Condition.broadcast target.changed)
 
     let retry_after (headers : Http.Header.t) : float =
         match Http.Header.get headers "retry-after" with
@@ -151,13 +236,20 @@ include (struct
         (resp, body)
 
     let request (t : t) ?headers ?body (meth : meth) (path : string) : int * string =
-        let key = bucket_key meth path in
+        let route = route_key meth path in
         let rec attempt n =
-            let wait = wait_time t key in
+            let wait = global_wait t in
             if wait > 0. then t.sleep wait;
-            let resp, body = send t ?headers ?body meth path in
+            let bucket = reserve t route in
+            let resp, body =
+                match send t ?headers ?body meth path with
+                | response -> response
+                | exception exn ->
+                    finish t route bucket (Http.Header.of_list []);
+                    raise exn
+            in
             let headers = Http.Response.headers resp in
-            update_bucket t key headers;
+            finish t route bucket headers;
             let status = Http.Status.to_int (Http.Response.status resp) in
             if status = 429 && n < 3 then begin
                 let delay = retry_after headers in
