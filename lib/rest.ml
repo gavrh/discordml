@@ -172,7 +172,7 @@ include (struct
                     end
                     else if bucket.reset_at <= now then begin
                         bucket.learned <- false;
-bucket.in_flight <- bucket.in_flight + 1;
+                        bucket.in_flight <- bucket.in_flight + 1;
                         `Reserved bucket
                     end
                     else
