@@ -43,6 +43,9 @@ module type Guild = sig
     val safety_alerts_channel_id : t -> string option
     val threads : t -> Channel.t list
     val presences : t -> Presence.t list
+    val scheduled_events : t -> Guild_scheduled_event.t list
+    val stage_instances : t -> Stage_instance.t list
+    val welcome_screen : t -> Welcome_screen.t option
 
     val create : string -> t
     val of_yojson : Yojson.Safe.t -> (t, string) result
@@ -99,6 +102,9 @@ include (struct
         safety_alerts_channel_id : string option;
         threads : Channel.t list;
         presences : Presence.t list;
+        scheduled_events : Guild_scheduled_event.t list;
+        stage_instances : Stage_instance.t list;
+        welcome_screen : Welcome_screen.t option;
     } [@@deriving show, eq]
 
     let id (g : t) = g.id
@@ -145,6 +151,9 @@ include (struct
     let safety_alerts_channel_id (g : t) = g.safety_alerts_channel_id
     let threads (g : t) = g.threads
     let presences (g : t) = g.presences
+    let scheduled_events (g : t) = g.scheduled_events
+    let stage_instances (g : t) = g.stage_instances
+    let welcome_screen (g : t) = g.welcome_screen
 
     let create (i : string) : t =
         { id = i;
@@ -189,7 +198,10 @@ include (struct
           premium_progress_bar_enabled = false;
           safety_alerts_channel_id = None;
           threads = [];
-          presences = [] }
+          presences = [];
+          scheduled_events = [];
+          stage_instances = [];
+          welcome_screen = None }
 
     let parse_list (json : Yojson.Safe.t) (name : string)
             (f : Yojson.Safe.t -> ('a, string) result) : 'a list =
@@ -278,7 +290,19 @@ include (struct
                     json |> member "safety_alerts_channel_id"
                     |> to_string_option;
                   threads = parse_list json "threads" Channel.of_yojson;
-                  presences = parse_list json "presences" Presence.of_yojson }
+                  presences = parse_list json "presences" Presence.of_yojson;
+                  scheduled_events =
+                    parse_list json "guild_scheduled_events"
+                      Guild_scheduled_event.of_yojson;
+                  stage_instances =
+                    parse_list json "stage_instances" Stage_instance.of_yojson;
+                  welcome_screen =
+                    (match json |> member "welcome_screen" with
+                     | `Null -> None
+                     | w ->
+                         (match Welcome_screen.of_yojson w with
+                          | Ok ws -> Some ws
+                          | Error msg -> raise (Failure msg))) }
         with
         | Type_error (msg, _) -> Error msg
         | Undefined (msg, _) -> Error msg

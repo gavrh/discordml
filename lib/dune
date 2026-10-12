@@ -2,8 +2,10 @@
  (name discord)
  (public_name discord)
  (modules application_command attachment channel client component embed emoji
-   guild intent interaction member message message_activity permission poll
-   presence reaction rest role role_subscription_data sticker thread_member user)
+   guild guild_ban guild_onboarding guild_preview guild_scheduled_event
+   guild_template intent interaction invite member message message_activity
+   permission poll presence reaction rest role role_subscription_data
+   stage_instance sticker thread_member user welcome_screen)
  (libraries discord_private eio eio.unix cohttp-eio http uri tls tls-eio
    ca-certs domain-name mirage-crypto-rng mirage-crypto-rng.unix yojson)
  (preprocess
