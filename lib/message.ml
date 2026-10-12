@@ -12,6 +12,16 @@ module type Message = sig
     val show : t -> string
 
     val reply : Rest.t -> t -> string -> unit
+    val edit : Rest.t -> t -> string -> unit
+    val delete : Rest.t -> t -> unit
+
+    val list :
+        Rest.t ->
+        channel_id:string ->
+        ?before:string ->
+        ?after:string ->
+        ?limit:int ->
+        t list
 end
 
 include (struct
@@ -58,5 +68,49 @@ include (struct
         let code, resp = Rest.request rest ~body Rest.Post path in
         if code < 200 || code >= 300 then
             failwith (Printf.sprintf "POST %s: HTTP %d: %s" path code resp)
+
+    let edit (rest : Rest.t) (m : t) (content : string) : unit =
+        let path = "/channels/" ^ m.channel_id ^ "/messages/" ^ m.id in
+        let body =
+            `Assoc [ ("content", `String content) ] |> Yojson.Safe.to_string
+        in
+        let code, resp = Rest.request rest ~body Rest.Patch path in
+        if code < 200 || code >= 300 then
+            failwith (Printf.sprintf "PATCH %s: HTTP %d: %s" path code resp)
+
+    let delete (rest : Rest.t) (m : t) : unit =
+        let path = "/channels/" ^ m.channel_id ^ "/messages/" ^ m.id in
+        let code, resp = Rest.request rest Rest.Delete path in
+        if code < 200 || code >= 300 then
+            failwith (Printf.sprintf "DELETE %s: HTTP %d: %s" path code resp)
+
+    let list (rest : Rest.t) ~(channel_id : string) ?(before : string option)
+            ?(after : string option) ?(limit : int option) : t list =
+        let base = "/channels/" ^ channel_id ^ "/messages" in
+        let params =
+            (match before with Some v -> [ ("before", v) ] | None -> [])
+            @ (match after with Some v -> [ ("after", v) ] | None -> [])
+            @ (match limit with
+               | Some v -> [ ("limit", string_of_int v) ]
+               | None -> [])
+        in
+        let path =
+            match params with
+            | [] -> base
+            | _ ->
+                List.fold_left
+                    (fun uri (k, v) -> Uri.add_query_param' uri (k, v))
+                    (Uri.of_string base) params
+                |> Uri.to_string
+        in
+        let code, resp = Rest.request rest Rest.Get path in
+        if code < 200 || code >= 300 then
+            failwith (Printf.sprintf "GET %s: HTTP %d: %s" path code resp);
+        Yojson.Safe.from_string resp |> Yojson.Safe.Util.to_list
+        |> List.map (fun json ->
+               match of_yojson json with
+               | Ok m -> m
+               | Error msg -> failwith (path ^ ": " ^ msg))
+        [@@warning "-16"]
 
 end : Message)
