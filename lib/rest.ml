@@ -279,10 +279,12 @@ include (struct
                           filename=\"%s\""
                          i (escape_filename filename));
                 crlf ();
-                Buffer.add_string b
-                    ("Content-Type: "
-                     ^ Option.value content_type
-                           ~default:"application/octet-stream");
+                let content_type =
+                    Option.value content_type ~default:"application/octet-stream"
+                in
+                if String.contains content_type '\r' || String.contains content_type '\n'
+                then failwith "rest: attachment content_type must not contain CR/LF";
+                Buffer.add_string b ("Content-Type: " ^ content_type);
                 crlf ();
                 crlf ();
                 Buffer.add_string b content;
