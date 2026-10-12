@@ -5,6 +5,8 @@ module type Attachment = sig
     val name : t -> string
     val content : t -> string
     val content_type : t -> string option
+
+    val pp : Format.formatter -> t -> unit
 end
 
 include (struct
@@ -13,7 +15,7 @@ include (struct
         name : string;
         content : string;
         content_type : string option;
-    }
+    } [@@deriving show]
 
     let create ?content_type ~name (content : string) : t =
         { name; content; content_type }
