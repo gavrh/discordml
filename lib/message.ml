@@ -79,7 +79,8 @@ include (struct
             |> Yojson.Safe.to_string
         in
         let files =
-            [ (Attachment.name attachment, Attachment.content attachment) ]
+            [ (Attachment.name attachment, Attachment.content attachment,
+               Attachment.content_type attachment) ]
         in
         let code, resp = Rest.request rest ~body ~files Rest.Post path in
         if code < 200 || code >= 300 then

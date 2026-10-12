@@ -27,7 +27,7 @@ module type Rest = sig
         t ->
         ?headers:(string * string) list ->
         ?body:string ->
-        ?files:(string * string) list ->
+        ?files:(string * string * string option) list ->
         meth ->
         string ->
         int * string
@@ -253,7 +253,7 @@ include (struct
         Buffer.contents b
 
     let multipart_body (boundary : string) (body : string option)
-            (files : (string * string) list) : string =
+            (files : (string * string * string option) list) : string =
         let b = Buffer.create 1024 in
         let crlf () = Buffer.add_string b "\r\n" in
         (match body with
@@ -270,7 +270,7 @@ include (struct
              crlf ()
          | None -> ());
         List.iteri
-            (fun i (filename, content) ->
+            (fun i (filename, content, content_type) ->
                 Buffer.add_string b ("--" ^ boundary);
                 crlf ();
                 Buffer.add_string b
@@ -279,7 +279,10 @@ include (struct
                           filename=\"%s\""
                          i (escape_filename filename));
                 crlf ();
-                Buffer.add_string b "Content-Type: application/octet-stream";
+                Buffer.add_string b
+                    ("Content-Type: "
+                     ^ Option.value content_type
+                           ~default:"application/octet-stream");
                 crlf ();
                 crlf ();
                 Buffer.add_string b content;
@@ -290,7 +293,7 @@ include (struct
         Buffer.contents b
 
     let send (t : t) ?(headers = []) ?(body : string option)
-            ?(files : (string * string) list = []) (meth : meth)
+            ?(files : (string * string * string option) list = []) (meth : meth)
             (path : string) =
         let uri = Uri.of_string (endpoint ^ path) in
         let content_type, body =

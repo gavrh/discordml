@@ -47,7 +47,8 @@ include (struct
     let send_file (rest : Rest.t) (c : t) (attachment : Attachment.t) : unit =
         let path = "/channels/" ^ c.id ^ "/messages" in
         let files =
-            [ (Attachment.name attachment, Attachment.content attachment) ]
+            [ (Attachment.name attachment, Attachment.content attachment,
+               Attachment.content_type attachment) ]
         in
         let code, resp = Rest.request rest ~files Rest.Post path in
         if code < 200 || code >= 300 then
