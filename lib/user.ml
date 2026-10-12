@@ -7,6 +7,7 @@ module type User = sig
     val bot : t -> bool
 
     val of_yojson : Yojson.Safe.t -> (t, string) result
+    val fetch : Rest.t -> string -> t
 
     val show : t -> string
 end
@@ -38,5 +39,17 @@ include (struct
         with
         | Type_error (msg, _) -> Error msg
         | Undefined (msg, _) -> Error msg
+
+    let decode (path : string) (resp : string) : t =
+        match of_yojson (Yojson.Safe.from_string resp) with
+        | Ok u -> u
+        | Error msg -> failwith (path ^ ": " ^ msg)
+
+    let fetch (rest : Rest.t) (id : string) : t =
+        let path = "/users/" ^ id in
+        let code, resp = Rest.request rest Rest.Get path in
+        if code < 200 || code >= 300 then
+            failwith (Printf.sprintf "GET %s: HTTP %d: %s" path code resp);
+        decode path resp
 
 end : User)
