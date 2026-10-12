@@ -233,14 +233,65 @@ include (struct
         | Some v -> (match float_of_string_opt v with Some d -> d | None -> 1.)
         | None -> 1.
 
-    let send (t : t) ?(headers = []) ?(body : string option) (meth : meth)
+    let random_boundary () : string =
+        let raw = Mirage_crypto_rng.generate 16 in
+        let b = Buffer.create 32 in
+        String.iter (fun c -> Printf.bprintf b "%02x" (Char.code c)) raw;
+        Buffer.contents b
+
+    let multipart_body (boundary : string) (body : string option)
+            (files : (string * string) list) : string =
+        let b = Buffer.create 1024 in
+        let crlf () = Buffer.add_string b "\r\n" in
+        (match body with
+         | Some json ->
+             Buffer.add_string b ("--" ^ boundary);
+             crlf ();
+             Buffer.add_string b
+                 "Content-Disposition: form-data; name=\"payload_json\"";
+             crlf ();
+             Buffer.add_string b "Content-Type: application/json";
+             crlf ();
+             crlf ();
+             Buffer.add_string b json;
+             crlf ()
+         | None -> ());
+        List.iteri
+            (fun i (filename, content) ->
+                Buffer.add_string b ("--" ^ boundary);
+                crlf ();
+                Buffer.add_string b
+                    (Printf.sprintf
+                         "Content-Disposition: form-data; name=\"files[%d]\"; \
+                          filename=\"%s\""
+                         i filename);
+                crlf ();
+                Buffer.add_string b "Content-Type: application/octet-stream";
+                crlf ();
+                crlf ();
+                Buffer.add_string b content;
+                crlf ())
+            files;
+        Buffer.add_string b ("--" ^ boundary ^ "--");
+        crlf ();
+        Buffer.contents b
+
+    let send (t : t) ?(headers = []) ?(body : string option)
+            ?(files : (string * string) list = []) (meth : meth)
             (path : string) =
         let uri = Uri.of_string (endpoint ^ path) in
+        let content_type, body =
+            if files = [] then ("application/json", body)
+            else
+                let boundary = random_boundary () in
+                ( "multipart/form-data; boundary=" ^ boundary,
+                  Some (multipart_body boundary body files) )
+        in
         let all_headers =
             Http.Header.of_list
                 (("Authorization", "Bot " ^ t.token)
                  :: ("User-Agent", user_agent)
-                 :: ("Content-Type", "application/json")
+                 :: ("Content-Type", content_type)
                  :: headers)
         in
         let body = Option.map Cohttp_eio.Body.of_string body in
