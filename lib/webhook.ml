@@ -13,7 +13,8 @@ module type Webhook = sig
         user : User.t option;
         name : string option;
         avatar : string option;
-        token : string option;
+        token : string option
+            [@printer fun fmt _ -> Format.pp_print_string fmt "<redacted>"];
         application_id : string option;
         source_guild : webhook_guild option;
         source_channel : Channel.t option;
@@ -55,11 +56,13 @@ include (struct
         user : User.t option;
         name : string option;
         avatar : string option;
-        token : string option;
+        token : string option
+            [@printer fun fmt _ -> Format.pp_print_string fmt "<redacted>"];
         application_id : string option;
         source_guild : webhook_guild option;
         source_channel : Channel.t option;
-        url : string option;
+        url : string option
+            [@printer fun fmt _ -> Format.pp_print_string fmt "<redacted>"];
     } [@@deriving show, eq]
 
     let id (w : t) : string = w.id
