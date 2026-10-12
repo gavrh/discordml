@@ -240,6 +240,18 @@ include (struct
         String.iter (fun c -> Printf.bprintf b "%02x" (Char.code c)) raw;
         Buffer.contents b
 
+    let escape_filename (name : string) : string =
+        let b = Buffer.create (String.length name) in
+        String.iter
+            (fun c ->
+                match c with
+                | '\r' | '\n' -> ()
+                | '"' -> Buffer.add_string b "%22"
+                | '\\' -> Buffer.add_string b "%5C"
+                | c -> Buffer.add_char b c)
+            name;
+        Buffer.contents b
+
     let multipart_body (boundary : string) (body : string option)
             (files : (string * string) list) : string =
         let b = Buffer.create 1024 in
@@ -265,7 +277,7 @@ include (struct
                     (Printf.sprintf
                          "Content-Disposition: form-data; name=\"files[%d]\"; \
                           filename=\"%s\""
-                         i filename);
+                         i (escape_filename filename));
                 crlf ();
                 Buffer.add_string b "Content-Type: application/octet-stream";
                 crlf ();
