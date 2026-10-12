@@ -209,7 +209,7 @@ include (struct
         | v ->
             (match of_yojson v with
              | Ok x -> Some x
-             | Error msg -> raise (Failure msg))
+             | Error _ -> None)
 
     let rec of_yojson (json : Yojson.Safe.t) : (t, string) result =
         let open Yojson.Safe.Util in
@@ -224,71 +224,78 @@ include (struct
             let attachments =
                 match json |> member "attachments" with
                 | `List l ->
-                    List.map
+                    List.filter_map
                         (fun a ->
                            match Attachment.of_yojson a with
-                           | Ok attachment -> attachment
-                           | Error msg -> raise (Failure msg))
+                           | Ok attachment -> Some attachment
+                           | Error _ -> None)
                         l
                 | _ -> []
             in
             let mentions =
                 match json |> member "mentions" with
                 | `List l ->
-                    List.map
+                    List.filter_map
                         (fun u ->
                            match User.of_yojson u with
-                           | Ok user -> user
-                           | Error msg -> raise (Failure msg))
+                           | Ok user -> Some user
+                           | Error _ -> None)
                         l
                 | _ -> []
             in
             let reactions =
                 match json |> member "reactions" with
                 | `List l ->
-                    List.map
+                    List.filter_map
                         (fun r ->
                            match Reaction.of_yojson ~channel_id ~message_id:id r
                            with
-                           | Ok reaction -> reaction
-                           | Error msg -> raise (Failure msg))
+                           | Ok reaction -> Some reaction
+                           | Error _ -> None)
                         l
                 | _ -> []
             in
             let embeds =
                 match json |> member "embeds" with
                 | `List l ->
-                    List.map
+                    List.filter_map
                         (fun e ->
                            match Embed.of_yojson e with
-                           | Ok embed -> embed
-                           | Error msg -> raise (Failure msg))
+                           | Ok embed -> Some embed
+                           | Error _ -> None)
                         l
                 | _ -> []
             in
             let components =
                 match json |> member "components" with
                 | `List l ->
-                    List.map
+                    List.filter_map
                         (fun c ->
                            match Component.of_yojson c with
-                           | Ok component -> component
-                           | Error msg -> raise (Failure msg))
+                           | Ok component -> Some component
+                           | Error _ -> None)
                         l
                 | _ -> []
             in
             let sticker_items =
                 match json |> member "sticker_items" with
                 | `List l ->
-                    List.map
+                    List.filter_map
                         (fun s ->
                            match Sticker.of_yojson s with
-                           | Ok sticker -> sticker
-                           | Error msg -> raise (Failure msg))
+                           | Ok sticker -> Some sticker
+                           | Error _ -> None)
                         l
                 | _ -> []
             in
-            let member_opt = parse_opt (json |> member "member") Member.of_yojson in
+            let member_opt =
+                match json |> member "member" with
+                | `Null -> None
+                | m ->
+                    (match Member.of_yojson_partial ~user:author m with
+                     | Ok member -> Some member
+                     | Error _ -> None)
+            in
             let referenced_message =
                 parse_opt (json |> member "referenced_message") of_yojson
             in
@@ -298,43 +305,51 @@ include (struct
             let mention_channels =
                 match json |> member "mention_channels" with
                 | `List l ->
-                    List.map
+                    List.filter_map
                         (fun c ->
-                           let open Yojson.Safe.Util in
-                           { id = c |> member "id" |> to_string;
-                             guild_id = c |> member "guild_id" |> to_string;
-                             type_ =
-                               c |> member "type" |> to_int_option
-                               |> Option.value ~default:0;
-                             name = c |> member "name" |> to_string })
+                           try
+                               let open Yojson.Safe.Util in
+                               Some
+                                   { id = c |> member "id" |> to_string;
+                                     guild_id =
+                                       c |> member "guild_id" |> to_string;
+                                     type_ =
+                                       c |> member "type" |> to_int_option
+                                       |> Option.value ~default:0;
+                                     name = c |> member "name" |> to_string }
+                           with
+                           | Type_error _ | Undefined _ -> None)
                         l
                 | _ -> []
             in
             let interaction =
-                match json |> member "interaction" with
-                | `Null -> None
-                | i ->
-                    Some
-                        { id = i |> member "id" |> to_string;
-                          type_ =
-                            i |> member "type" |> to_int_option
-                            |> Option.value ~default:0;
-                          name = i |> member "name" |> to_string;
-                          user =
-                            (match User.of_yojson (i |> member "user") with
-                             | Ok user -> user
-                             | Error msg -> raise (Failure msg)) }
+                parse_opt (json |> member "interaction") (fun i ->
+                    let open Yojson.Safe.Util in
+                    try
+                        Ok
+                            { id = i |> member "id" |> to_string;
+                              type_ =
+                                i |> member "type" |> to_int_option
+                                |> Option.value ~default:0;
+                              name = i |> member "name" |> to_string;
+                              user =
+                                (match User.of_yojson (i |> member "user") with
+                                 | Ok user -> user
+                                 | Error msg -> raise (Failure msg)) }
+                    with
+                    | Type_error (msg, _) -> Error msg
+                    | Undefined (msg, _) -> Error msg
+                    | Failure msg -> Error msg)
             in
             let poll = parse_opt (json |> member "poll") Poll.of_yojson in
             let message_snapshots =
                 match json |> member "message_snapshots" with
                 | `List l ->
-                    List.map
+                    List.filter_map
                         (fun s ->
-                           { message =
-                               (match of_yojson (s |> member "message") with
-                                | Ok message -> message
-                                | Error msg -> raise (Failure msg)) })
+                           match of_yojson (s |> member "message") with
+                           | Ok message -> Some { message }
+                           | Error _ -> None)
                         l
                 | _ -> []
             in

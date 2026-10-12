@@ -409,7 +409,8 @@ include (struct
                      List.iter
                          (fun f -> Eio.Fiber.fork ~sw (fun () -> f c message))
                          (Atomic.get c.message_handlers)
-                 | Error _ -> ())
+                 | Error msg ->
+                     prerr_endline ("MESSAGE_CREATE decode failed: " ^ msg))
             | Some event ->
                 (match event with
                  | Discord_private.P_event.Ready ->
