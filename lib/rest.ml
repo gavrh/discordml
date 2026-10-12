@@ -27,6 +27,7 @@ module type Rest = sig
         t ->
         ?headers:(string * string) list ->
         ?body:string ->
+        ?files:(string * string) list ->
         meth ->
         string ->
         int * string
@@ -304,14 +305,14 @@ include (struct
         in
         (resp, body)
 
-    let request (t : t) ?headers ?body (meth : meth) (path : string) : int * string =
+    let request (t : t) ?headers ?body ?files (meth : meth) (path : string) : int * string =
         let route = route_key meth path in
         let rec attempt n =
             let wait = global_wait t in
             if wait > 0. then t.sleep wait;
             let bucket = reserve t route in
             let resp, body =
-                match send t ?headers ?body meth path with
+                match send t ?headers ?body ?files meth path with
                 | response -> response
                 | exception exn ->
                     finish t route bucket (Http.Header.of_list []);
