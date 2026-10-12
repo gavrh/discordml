@@ -21,6 +21,7 @@ module type Message = sig
         ?before:string ->
         ?after:string ->
         ?limit:int ->
+        unit ->
         t list
 end
 
@@ -84,8 +85,7 @@ include (struct
         if code < 200 || code >= 300 then
             failwith (Printf.sprintf "DELETE %s: HTTP %d: %s" path code resp)
 
-    let list (rest : Rest.t) ~(channel_id : string) ?(before : string option)
-            ?(after : string option) ?(limit : int option) : t list =
+    let list (rest : Rest.t) ~channel_id ?before ?after ?limit () : t list =
         let base = "/channels/" ^ channel_id ^ "/messages" in
         let params =
             (match before with Some v -> [ ("before", v) ] | None -> [])
@@ -111,6 +111,5 @@ include (struct
                match of_yojson json with
                | Ok m -> m
                | Error msg -> failwith (path ^ ": " ^ msg))
-        [@@warning "-16"]
 
 end : Message)
