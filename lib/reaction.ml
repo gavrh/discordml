@@ -13,6 +13,8 @@ module type Reaction = sig
         Yojson.Safe.t ->
         (t, string) result
 
+    val pp : Format.formatter -> t -> unit
+
     val show : t -> string
 
     val users : Rest.t -> t -> User.t list
