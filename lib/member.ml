@@ -86,8 +86,13 @@ include (struct
 
     let of_yojson (json : Yojson.Safe.t) : (t, string) result =
         let open Yojson.Safe.Util in
-        match User.of_yojson (json |> member "user") with
-        | Ok user -> of_yojson_partial ~user json
-        | Error msg -> Error msg
+        try
+            match User.of_yojson (json |> member "user") with
+            | Ok user -> of_yojson_partial ~user json
+            | Error msg -> Error msg
+        with
+        | Type_error (msg, _) -> Error msg
+        | Undefined (msg, _) -> Error msg
+        | Failure msg -> Error msg
 
 end : Member)
