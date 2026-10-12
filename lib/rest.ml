@@ -27,6 +27,7 @@ module type Rest = sig
         t ->
         ?headers:(string * string) list ->
         ?body:string ->
+        ?files:(string * string * string option) list ->
         meth ->
         string ->
         int * string
@@ -233,14 +234,82 @@ include (struct
         | Some v -> (match float_of_string_opt v with Some d -> d | None -> 1.)
         | None -> 1.
 
-    let send (t : t) ?(headers = []) ?(body : string option) (meth : meth)
+    let random_boundary () : string =
+        let raw = Mirage_crypto_rng.generate 16 in
+        let b = Buffer.create 32 in
+        String.iter (fun c -> Printf.bprintf b "%02x" (Char.code c)) raw;
+        Buffer.contents b
+
+    let escape_filename (name : string) : string =
+        let b = Buffer.create (String.length name) in
+        String.iter
+            (fun c ->
+                match c with
+                | '\r' | '\n' -> ()
+                | '"' -> Buffer.add_string b "%22"
+                | '\\' -> Buffer.add_string b "%5C"
+                | c -> Buffer.add_char b c)
+            name;
+        Buffer.contents b
+
+    let multipart_body (boundary : string) (body : string option)
+            (files : (string * string * string option) list) : string =
+        let b = Buffer.create 1024 in
+        let crlf () = Buffer.add_string b "\r\n" in
+        (match body with
+         | Some json ->
+             Buffer.add_string b ("--" ^ boundary);
+             crlf ();
+             Buffer.add_string b
+                 "Content-Disposition: form-data; name=\"payload_json\"";
+             crlf ();
+             Buffer.add_string b "Content-Type: application/json";
+             crlf ();
+             crlf ();
+             Buffer.add_string b json;
+             crlf ()
+         | None -> ());
+        List.iteri
+            (fun i (filename, content, content_type) ->
+                Buffer.add_string b ("--" ^ boundary);
+                crlf ();
+                Buffer.add_string b
+                    (Printf.sprintf
+                         "Content-Disposition: form-data; name=\"files[%d]\"; \
+                          filename=\"%s\""
+                         i (escape_filename filename));
+                crlf ();
+                let content_type =
+                    Option.value content_type ~default:"application/octet-stream"
+                in
+                if String.contains content_type '\r' || String.contains content_type '\n'
+                then failwith "rest: attachment content_type must not contain CR/LF";
+                Buffer.add_string b ("Content-Type: " ^ content_type);
+                crlf ();
+                crlf ();
+                Buffer.add_string b content;
+                crlf ())
+            files;
+        Buffer.add_string b ("--" ^ boundary ^ "--");
+        crlf ();
+        Buffer.contents b
+
+    let send (t : t) ?(headers = []) ?(body : string option)
+            ?(files : (string * string * string option) list = []) (meth : meth)
             (path : string) =
         let uri = Uri.of_string (endpoint ^ path) in
+        let content_type, body =
+            if files = [] then ("application/json", body)
+            else
+                let boundary = random_boundary () in
+                ( "multipart/form-data; boundary=" ^ boundary,
+                  Some (multipart_body boundary body files) )
+        in
         let all_headers =
             Http.Header.of_list
                 (("Authorization", "Bot " ^ t.token)
                  :: ("User-Agent", user_agent)
-                 :: ("Content-Type", "application/json")
+                 :: ("Content-Type", content_type)
                  :: headers)
         in
         let body = Option.map Cohttp_eio.Body.of_string body in
@@ -253,14 +322,14 @@ include (struct
         in
         (resp, body)
 
-    let request (t : t) ?headers ?body (meth : meth) (path : string) : int * string =
+    let request (t : t) ?headers ?body ?files (meth : meth) (path : string) : int * string =
         let route = route_key meth path in
         let rec attempt n =
             let wait = global_wait t in
             if wait > 0. then t.sleep wait;
             let bucket = reserve t route in
             let resp, body =
-                match send t ?headers ?body meth path with
+                match send t ?headers ?body ?files meth path with
                 | response -> response
                 | exception exn ->
                     finish t route bucket (Http.Header.of_list []);
