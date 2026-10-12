@@ -391,7 +391,8 @@ include (struct
         channel_id : string option;
         member : Member.t option;
         user : User.t option;
-        token : string;
+        token : string
+            [@printer fun fmt _ -> Format.pp_print_string fmt "<redacted>"];
         version : int;
         message : Message.t option;
         app_permissions : Permission.t option;
