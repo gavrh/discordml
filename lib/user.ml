@@ -12,6 +12,7 @@ module type User = sig
     val fetch : Rest.t -> string -> t
 
     val pp : Format.formatter -> t -> unit
+    val equal : t -> t -> bool
     val show : t -> string
 end
 
@@ -24,7 +25,7 @@ include (struct
         discriminator : string option;
         avatar : string option;
         bot : bool;
-    } [@@deriving show]
+    } [@@deriving show, eq]
 
     let id (u : t) : string = u.id
     let username (u : t) : string = u.username

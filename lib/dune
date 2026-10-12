@@ -1,7 +1,8 @@
 (library
  (name discord)
  (public_name discord)
- (modules attachment channel client guild intent message reaction rest user)
+ (modules attachment channel client emoji guild intent member message permission
+   reaction rest thread_member user)
  (libraries discord_private eio eio.unix cohttp-eio http uri tls tls-eio
    ca-certs domain-name mirage-crypto-rng mirage-crypto-rng.unix yojson)
  (preprocess
