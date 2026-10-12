@@ -2,8 +2,8 @@
  (name discord)
  (public_name discord)
  (modules attachment channel client component embed emoji guild intent member
-   message message_activity permission poll reaction rest role_subscription_data
-   sticker thread_member user)
+   message message_activity permission poll presence reaction rest role
+   role_subscription_data sticker thread_member user)
  (libraries discord_private eio eio.unix cohttp-eio http uri tls tls-eio
    ca-certs domain-name mirage-crypto-rng mirage-crypto-rng.unix yojson)
  (preprocess
