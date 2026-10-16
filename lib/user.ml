@@ -39,7 +39,9 @@ include (struct
         try
             Ok
                 { id = json |> member "id" |> to_string;
-                  username = json |> member "username" |> to_string;
+                  username =
+                    json |> member "username" |> to_string_option
+                    |> Option.value ~default:"";
                   global_name = json |> member "global_name" |> to_string_option;
                   discriminator =
                     json |> member "discriminator" |> to_string_option;
