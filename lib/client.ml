@@ -21,6 +21,10 @@ module type Client = sig
     val members : t -> guild_id:string -> Member.t list
     val messages : t -> channel_id:string -> Message.t list
 
+    val fetch_channel : t -> string -> Channel.t
+    val fetch_guild : t -> string -> Guild.t
+    val fetch_member : t -> guild_id:string -> user_id:string -> Member.t
+
     val on_ready : t -> (t -> unit) -> unit
     val on_resumed : t -> (t -> unit) -> unit
     val on_application_command_permissions_update : t -> (t -> unit) -> unit
@@ -248,6 +252,32 @@ include (struct
         unit =
         Eio.Mutex.use_rw ~protect:true c.messages_mutex (fun () ->
             Hashtbl.remove c.messages (channel_id, message_id))
+
+    let fetch_channel (c : t) (id : string) : Channel.t =
+        match channel c id with
+        | Some ch -> ch
+        | None ->
+            let ch = Channel.fetch (rest c) id in
+            put_channel c ch;
+            ch
+
+    let fetch_guild (c : t) (id : string) : Guild.t =
+        match guild c id with
+        | Some g -> g
+        | None ->
+            let g = Guild.fetch (rest c) id in
+            Eio.Mutex.use_rw ~protect:true c.guilds_mutex (fun () ->
+                Hashtbl.replace c.guilds (Guild.id g) g);
+            g
+
+    let fetch_member (c : t) ~(guild_id : string) ~(user_id : string) :
+        Member.t =
+        match member c ~guild_id ~user_id with
+        | Some m -> m
+        | None ->
+            let m = Member.fetch (rest c) ~guild_id ~user_id in
+            put_member c guild_id (User.id (Member.user m)) m;
+            m
 
     let drop_guild_channels (c : t) (guild_id : string) : unit =
         Eio.Mutex.use_rw ~protect:true c.channels_mutex (fun () ->
