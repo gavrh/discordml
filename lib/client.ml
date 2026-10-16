@@ -16,6 +16,11 @@ module type Client = sig
     val user : t -> User.t option
     val rest : t -> Rest.t
 
+    val guilds : t -> Guild.t list
+    val channels : t -> guild_id:string -> Channel.t list
+    val members : t -> guild_id:string -> Member.t list
+    val messages : t -> channel_id:string -> Message.t list
+
     val on_ready : t -> (t -> unit) -> unit
     val on_resumed : t -> (t -> unit) -> unit
     val on_application_command_permissions_update : t -> (t -> unit) -> unit
@@ -154,6 +159,32 @@ include (struct
         match c.rest with
         | Some r -> r
         | None -> failwith "client: not started"
+
+    let guilds (c : t) : Guild.t list =
+        Eio.Mutex.use_ro c.guilds_mutex (fun () ->
+            Hashtbl.fold (fun _ g acc -> g :: acc) c.guilds [])
+
+    let channels (c : t) ~(guild_id : string) : Channel.t list =
+        Eio.Mutex.use_ro c.channels_mutex (fun () ->
+            Hashtbl.fold
+                (fun _ ch acc ->
+                   match Channel.guild_id ch with
+                   | Some g when g = guild_id -> ch :: acc
+                   | _ -> acc)
+                c.channels [])
+
+    let members (c : t) ~(guild_id : string) : Member.t list =
+        Eio.Mutex.use_ro c.members_mutex (fun () ->
+            Hashtbl.fold
+                (fun (g, _) m acc -> if g = guild_id then m :: acc else acc)
+                c.members [])
+
+    let messages (c : t) ~(channel_id : string) : Message.t list =
+        Eio.Mutex.use_ro c.messages_mutex (fun () ->
+            Hashtbl.fold
+                (fun (cid, _) m acc ->
+                   if cid = channel_id then m :: acc else acc)
+                c.messages [])
 
     let log_decode_error (c : t) (name : string) (msg : string) : unit =
         let rec log () =
