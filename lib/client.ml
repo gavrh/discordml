@@ -7,6 +7,12 @@ module type Client = sig
     val start : env:Eio_unix.Stdenv.base -> t -> string -> unit
 
     val guild : t -> string -> Guild.t option
+    val channel : t -> string -> Channel.t option
+    val member : t -> guild_id:string -> user_id:string -> Member.t option
+    val presence :
+        t -> guild_id:string -> user_id:string -> Presence.t option
+    val message :
+        t -> channel_id:string -> message_id:string -> Message.t option
     val user : t -> User.t option
     val rest : t -> Rest.t
 
@@ -98,6 +104,15 @@ include (struct
         intents : int;
         guilds : (string, Guild.t) Hashtbl.t [@printer fun fmt tbl -> Format.fprintf fmt "[ ...%d ]" (Hashtbl.length tbl)];
         guilds_mutex : Eio.Mutex.t [@opaque];
+        channels : (string, Channel.t) Hashtbl.t [@printer fun fmt tbl -> Format.fprintf fmt "[ ...%d ]" (Hashtbl.length tbl)];
+        channels_mutex : Eio.Mutex.t [@opaque];
+        members : ((string * string), Member.t) Hashtbl.t [@printer fun fmt tbl -> Format.fprintf fmt "[ ...%d ]" (Hashtbl.length tbl)];
+        members_mutex : Eio.Mutex.t [@opaque];
+        presences : ((string * string), Presence.t) Hashtbl.t [@printer fun fmt tbl -> Format.fprintf fmt "[ ...%d ]" (Hashtbl.length tbl)];
+        presences_mutex : Eio.Mutex.t [@opaque];
+        messages : ((string * string), Message.t) Hashtbl.t [@printer fun fmt tbl -> Format.fprintf fmt "[ ...%d ]" (Hashtbl.length tbl)];
+        messages_mutex : Eio.Mutex.t [@opaque];
+        decode_errors : string list Atomic.t [@opaque];
         shards : (int, Discord_private.P_shard.t) Hashtbl.t [@printer fun fmt tbl -> Format.fprintf fmt "[ ...%d ]" (Hashtbl.length tbl)];
         shards_mutex : Eio.Mutex.t [@opaque];
         handlers : (Discord_private.P_event.t, (t -> unit) list) Hashtbl.t Atomic.t [@opaque];
@@ -113,6 +128,25 @@ include (struct
 
     let guild (c : t) (gid : string) : Guild.t option =
         Eio.Mutex.use_ro c.guilds_mutex (fun () -> Hashtbl.find_opt c.guilds gid)
+
+    let channel (c : t) (cid : string) : Channel.t option =
+        Eio.Mutex.use_ro c.channels_mutex (fun () ->
+            Hashtbl.find_opt c.channels cid)
+
+    let member (c : t) ~(guild_id : string) ~(user_id : string) :
+        Member.t option =
+        Eio.Mutex.use_ro c.members_mutex (fun () ->
+            Hashtbl.find_opt c.members (guild_id, user_id))
+
+    let presence (c : t) ~(guild_id : string) ~(user_id : string) :
+        Presence.t option =
+        Eio.Mutex.use_ro c.presences_mutex (fun () ->
+            Hashtbl.find_opt c.presences (guild_id, user_id))
+
+    let message (c : t) ~(channel_id : string) ~(message_id : string) :
+        Message.t option =
+        Eio.Mutex.use_ro c.messages_mutex (fun () ->
+            Hashtbl.find_opt c.messages (channel_id, message_id))
 
     let user (c : t) : User.t option = c.user
 
@@ -381,6 +415,15 @@ include (struct
         intents = i;
         guilds = Hashtbl.create 0;
         guilds_mutex = Eio.Mutex.create ();
+        channels = Hashtbl.create 0;
+        channels_mutex = Eio.Mutex.create ();
+        members = Hashtbl.create 0;
+        members_mutex = Eio.Mutex.create ();
+        presences = Hashtbl.create 0;
+        presences_mutex = Eio.Mutex.create ();
+        messages = Hashtbl.create 0;
+        messages_mutex = Eio.Mutex.create ();
+        decode_errors = Atomic.make [];
         shards = Hashtbl.create 0;
         shards_mutex = Eio.Mutex.create ();
         handlers = Atomic.make (Hashtbl.create 0);
