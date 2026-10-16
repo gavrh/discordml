@@ -155,6 +155,153 @@ include (struct
         | Some r -> r
         | None -> failwith "client: not started"
 
+    let log_decode_error (c : t) (name : string) (msg : string) : unit =
+        let rec log () =
+            let logged = Atomic.get c.decode_errors in
+            if not (List.mem name logged) then
+                if Atomic.compare_and_set c.decode_errors logged
+                       (name :: logged)
+                then prerr_endline (name ^ " decode failed: " ^ msg)
+                else log ()
+        in
+        log ()
+
+    let put_channel (c : t) (ch : Channel.t) : unit =
+        Eio.Mutex.use_rw ~protect:true c.channels_mutex (fun () ->
+            Hashtbl.replace c.channels (Channel.id ch) ch)
+
+    let remove_channel (c : t) (cid : string) : unit =
+        Eio.Mutex.use_rw ~protect:true c.channels_mutex (fun () ->
+            Hashtbl.remove c.channels cid)
+
+    let put_member (c : t) (guild_id : string) (user_id : string)
+        (m : Member.t) : unit =
+        Eio.Mutex.use_rw ~protect:true c.members_mutex (fun () ->
+            Hashtbl.replace c.members (guild_id, user_id) m)
+
+    let remove_member (c : t) (guild_id : string) (user_id : string) : unit =
+        Eio.Mutex.use_rw ~protect:true c.members_mutex (fun () ->
+            Hashtbl.remove c.members (guild_id, user_id))
+
+    let put_presence (c : t) (guild_id : string) (user_id : string)
+        (p : Presence.t) : unit =
+        Eio.Mutex.use_rw ~protect:true c.presences_mutex (fun () ->
+            Hashtbl.replace c.presences (guild_id, user_id) p)
+
+    let put_message (c : t) (m : Message.t) : unit =
+        Eio.Mutex.use_rw ~protect:true c.messages_mutex (fun () ->
+            Hashtbl.replace c.messages (Message.channel_id m, Message.id m) m)
+
+    let remove_message (c : t) (channel_id : string) (message_id : string) :
+        unit =
+        Eio.Mutex.use_rw ~protect:true c.messages_mutex (fun () ->
+            Hashtbl.remove c.messages (channel_id, message_id))
+
+    let drop_guild_channels (c : t) (guild_id : string) : unit =
+        Eio.Mutex.use_rw ~protect:true c.channels_mutex (fun () ->
+            Hashtbl.filter_map_inplace
+                (fun _ ch ->
+                    match Channel.guild_id ch with
+                    | Some g when g = guild_id -> None
+                    | _ -> Some ch)
+                c.channels)
+
+    let drop_guild_members (c : t) (guild_id : string) : unit =
+        Eio.Mutex.use_rw ~protect:true c.members_mutex (fun () ->
+            Hashtbl.filter_map_inplace
+                (fun (g, _) m -> if g = guild_id then None else Some m)
+                c.members)
+
+    let drop_guild_presences (c : t) (guild_id : string) : unit =
+        Eio.Mutex.use_rw ~protect:true c.presences_mutex (fun () ->
+            Hashtbl.filter_map_inplace
+                (fun (g, _) p -> if g = guild_id then None else Some p)
+                c.presences)
+
+    let cache_event (c : t) (event : Discord_private.P_event.t)
+        (json : Yojson.Safe.t) : unit =
+        let open Yojson.Safe.Util in
+        let name = Discord_private.P_event.to_string event in
+        let decode of_yojson on_ok =
+            match of_yojson json with
+            | Ok v -> on_ok v
+            | Error msg -> log_decode_error c name msg
+        in
+        match event with
+        | Discord_private.P_event.Guild_create
+        | Discord_private.P_event.Guild_update ->
+            decode Guild.of_yojson (fun g ->
+                Eio.Mutex.use_rw ~protect:true c.guilds_mutex (fun () ->
+                    Hashtbl.replace c.guilds (Guild.id g) g);
+                List.iter (put_channel c) (Guild.channels g))
+        | Discord_private.P_event.Guild_delete ->
+            (match json |> member "id" |> to_string_option with
+             | Some guild_id ->
+                 Eio.Mutex.use_rw ~protect:true c.guilds_mutex (fun () ->
+                     Hashtbl.remove c.guilds guild_id);
+                 drop_guild_channels c guild_id;
+                 drop_guild_members c guild_id;
+                 drop_guild_presences c guild_id
+             | None -> ())
+        | Discord_private.P_event.Channel_create
+        | Discord_private.P_event.Channel_update
+        | Discord_private.P_event.Thread_create
+        | Discord_private.P_event.Thread_update ->
+            decode Channel.of_yojson (put_channel c)
+        | Discord_private.P_event.Channel_delete
+        | Discord_private.P_event.Thread_delete ->
+            (match json |> member "id" |> to_string_option with
+             | Some cid -> remove_channel c cid
+             | None -> ())
+        | Discord_private.P_event.Guild_member_add
+        | Discord_private.P_event.Guild_member_update ->
+            (match Member.of_yojson json with
+             | Ok m ->
+                 (match json |> member "guild_id" |> to_string_option with
+                  | Some guild_id ->
+                      put_member c guild_id (User.id (Member.user m)) m
+                  | None -> ())
+             | Error msg -> log_decode_error c name msg)
+        | Discord_private.P_event.Guild_member_remove ->
+            (match json |> member "guild_id" |> to_string_option with
+             | Some guild_id ->
+                 (match
+                      json |> member "user" |> member "id" |> to_string_option
+                  with
+                  | Some user_id -> remove_member c guild_id user_id
+                  | None -> ())
+             | None -> ())
+        | Discord_private.P_event.Presence_update ->
+            (match Presence.of_yojson json with
+             | Ok p ->
+                 (match Presence.guild_id p with
+                  | Some guild_id ->
+                      put_presence c guild_id (User.id (Presence.user p)) p
+                  | None -> ())
+             | Error msg -> log_decode_error c name msg)
+        | Discord_private.P_event.Message_update ->
+            decode Message.of_yojson (put_message c)
+        | Discord_private.P_event.Message_delete ->
+            (match ( json |> member "channel_id" |> to_string_option,
+                     json |> member "id" |> to_string_option ) with
+             | Some channel_id, Some message_id ->
+                 remove_message c channel_id message_id
+             | _ -> ())
+        | Discord_private.P_event.Message_delete_bulk ->
+            (match json |> member "channel_id" |> to_string_option with
+             | Some channel_id ->
+                 (match json |> member "ids" with
+                  | `List ids ->
+                      List.iter
+                          (function
+                            | `String message_id ->
+                                remove_message c channel_id message_id
+                            | _ -> ())
+                          ids
+                  | _ -> ())
+             | None -> ())
+        | _ -> ()
+
     let add_handler (c : t) (event : Discord_private.P_event.t) (f : t -> unit) : unit =
         let rec add () =
             let old = Atomic.get c.handlers in
@@ -449,12 +596,14 @@ include (struct
             | Some Discord_private.P_event.Message_create ->
                 (match Message.of_yojson json with
                  | Ok message ->
+                     put_message c message;
                      List.iter
                          (fun f -> Eio.Fiber.fork ~sw (fun () -> f c message))
                          (Atomic.get c.message_handlers)
                  | Error msg ->
-                     prerr_endline ("MESSAGE_CREATE decode failed: " ^ msg))
+                     log_decode_error c "MESSAGE_CREATE" msg)
             | Some event ->
+                cache_event c event json;
                 (match event with
                  | Discord_private.P_event.Ready ->
                      (match User.of_yojson (json |> member "user") with
