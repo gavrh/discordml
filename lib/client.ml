@@ -170,6 +170,27 @@ include (struct
         Eio.Mutex.use_rw ~protect:true c.channels_mutex (fun () ->
             Hashtbl.replace c.channels (Channel.id ch) ch)
 
+    let put_guild_channels (c : t) (name : string) (guild_id : string)
+        (json : Yojson.Safe.t) : unit =
+        let open Yojson.Safe.Util in
+        match json |> member "channels" with
+        | `List channels ->
+            List.iter
+                (fun channel ->
+                   let channel =
+                       match channel with
+                       | `Assoc fields ->
+                           `Assoc
+                               (("guild_id", `String guild_id)
+                                :: List.remove_assoc "guild_id" fields)
+                       | _ -> channel
+                   in
+                   match Channel.of_yojson channel with
+                   | Ok ch -> put_channel c ch
+                   | Error msg -> log_decode_error c name msg)
+                channels
+        | _ -> ()
+
     let remove_channel (c : t) (cid : string) : unit =
         Eio.Mutex.use_rw ~protect:true c.channels_mutex (fun () ->
             Hashtbl.remove c.channels cid)
@@ -233,7 +254,11 @@ include (struct
             decode Guild.of_yojson (fun g ->
                 Eio.Mutex.use_rw ~protect:true c.guilds_mutex (fun () ->
                     Hashtbl.replace c.guilds (Guild.id g) g);
-                List.iter (put_channel c) (Guild.channels g))
+                put_guild_channels c name (Guild.id g) json;
+                List.iter
+                    (fun m ->
+                       put_member c (Guild.id g) (User.id (Member.user m)) m)
+                    (Guild.members g))
         | Discord_private.P_event.Guild_delete ->
             (match json |> member "id" |> to_string_option with
              | Some guild_id ->
