@@ -16,6 +16,15 @@ module type Client = sig
     val user : t -> User.t option
     val rest : t -> Rest.t
 
+    val guilds : t -> Guild.t list
+    val channels : t -> guild_id:string -> Channel.t list
+    val members : t -> guild_id:string -> Member.t list
+    val messages : t -> channel_id:string -> Message.t list
+
+    val fetch_channel : t -> string -> Channel.t
+    val fetch_guild : t -> string -> Guild.t
+    val fetch_member : t -> guild_id:string -> user_id:string -> Member.t
+
     val on_ready : t -> (t -> unit) -> unit
     val on_resumed : t -> (t -> unit) -> unit
     val on_application_command_permissions_update : t -> (t -> unit) -> unit
@@ -155,6 +164,32 @@ include (struct
         | Some r -> r
         | None -> failwith "client: not started"
 
+    let guilds (c : t) : Guild.t list =
+        Eio.Mutex.use_ro c.guilds_mutex (fun () ->
+            Hashtbl.fold (fun _ g acc -> g :: acc) c.guilds [])
+
+    let channels (c : t) ~(guild_id : string) : Channel.t list =
+        Eio.Mutex.use_ro c.channels_mutex (fun () ->
+            Hashtbl.fold
+                (fun _ ch acc ->
+                   match Channel.guild_id ch with
+                   | Some g when g = guild_id -> ch :: acc
+                   | _ -> acc)
+                c.channels [])
+
+    let members (c : t) ~(guild_id : string) : Member.t list =
+        Eio.Mutex.use_ro c.members_mutex (fun () ->
+            Hashtbl.fold
+                (fun (g, _) m acc -> if g = guild_id then m :: acc else acc)
+                c.members [])
+
+    let messages (c : t) ~(channel_id : string) : Message.t list =
+        Eio.Mutex.use_ro c.messages_mutex (fun () ->
+            Hashtbl.fold
+                (fun (cid, _) m acc ->
+                   if cid = channel_id then m :: acc else acc)
+                c.messages [])
+
     let log_decode_error (c : t) (name : string) (msg : string) : unit =
         let rec log () =
             let logged = Atomic.get c.decode_errors in
@@ -169,6 +204,27 @@ include (struct
     let put_channel (c : t) (ch : Channel.t) : unit =
         Eio.Mutex.use_rw ~protect:true c.channels_mutex (fun () ->
             Hashtbl.replace c.channels (Channel.id ch) ch)
+
+    let put_guild_channels (c : t) (name : string) (guild_id : string)
+        (json : Yojson.Safe.t) : unit =
+        let open Yojson.Safe.Util in
+        match json |> member "channels" with
+        | `List channels ->
+            List.iter
+                (fun channel ->
+                   let channel =
+                       match channel with
+                       | `Assoc fields ->
+                           `Assoc
+                               (("guild_id", `String guild_id)
+                                :: List.remove_assoc "guild_id" fields)
+                       | _ -> channel
+                   in
+                   match Channel.of_yojson channel with
+                   | Ok ch -> put_channel c ch
+                   | Error msg -> log_decode_error c name msg)
+                channels
+        | _ -> ()
 
     let remove_channel (c : t) (cid : string) : unit =
         Eio.Mutex.use_rw ~protect:true c.channels_mutex (fun () ->
@@ -196,6 +252,32 @@ include (struct
         unit =
         Eio.Mutex.use_rw ~protect:true c.messages_mutex (fun () ->
             Hashtbl.remove c.messages (channel_id, message_id))
+
+    let fetch_channel (c : t) (id : string) : Channel.t =
+        match channel c id with
+        | Some ch -> ch
+        | None ->
+            let ch = Channel.fetch (rest c) id in
+            put_channel c ch;
+            ch
+
+    let fetch_guild (c : t) (id : string) : Guild.t =
+        match guild c id with
+        | Some g -> g
+        | None ->
+            let g = Guild.fetch (rest c) id in
+            Eio.Mutex.use_rw ~protect:true c.guilds_mutex (fun () ->
+                Hashtbl.replace c.guilds (Guild.id g) g);
+            g
+
+    let fetch_member (c : t) ~(guild_id : string) ~(user_id : string) :
+        Member.t =
+        match member c ~guild_id ~user_id with
+        | Some m -> m
+        | None ->
+            let m = Member.fetch (rest c) ~guild_id ~user_id in
+            put_member c guild_id (User.id (Member.user m)) m;
+            m
 
     let drop_guild_channels (c : t) (guild_id : string) : unit =
         Eio.Mutex.use_rw ~protect:true c.channels_mutex (fun () ->
@@ -233,7 +315,11 @@ include (struct
             decode Guild.of_yojson (fun g ->
                 Eio.Mutex.use_rw ~protect:true c.guilds_mutex (fun () ->
                     Hashtbl.replace c.guilds (Guild.id g) g);
-                List.iter (put_channel c) (Guild.channels g))
+                put_guild_channels c name (Guild.id g) json;
+                List.iter
+                    (fun m ->
+                       put_member c (Guild.id g) (User.id (Member.user m)) m)
+                    (Guild.members g))
         | Discord_private.P_event.Guild_delete ->
             (match json |> member "id" |> to_string_option with
              | Some guild_id ->

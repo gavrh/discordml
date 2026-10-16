@@ -15,6 +15,8 @@ module type Member = sig
     val of_yojson : Yojson.Safe.t -> (t, string) result
     val of_yojson_partial : user:User.t -> Yojson.Safe.t -> (t, string) result
 
+    val fetch : Rest.t -> guild_id:string -> user_id:string -> t
+
     val pp : Format.formatter -> t -> unit
     val equal : t -> t -> bool
     val show : t -> string
@@ -94,5 +96,17 @@ include (struct
         | Type_error (msg, _) -> Error msg
         | Undefined (msg, _) -> Error msg
         | Failure msg -> Error msg
+
+    let decode (path : string) (resp : string) : t =
+        match of_yojson (Yojson.Safe.from_string resp) with
+        | Ok m -> m
+        | Error msg -> failwith (path ^ ": " ^ msg)
+
+    let fetch (rest : Rest.t) ~(guild_id : string) ~(user_id : string) : t =
+        let path = "/guilds/" ^ guild_id ^ "/members/" ^ user_id in
+        let code, resp = Rest.request rest Rest.Get path in
+        if code < 200 || code >= 300 then
+            failwith (Printf.sprintf "GET %s: HTTP %d: %s" path code resp);
+        decode path resp
 
 end : Member)
