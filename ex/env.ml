@@ -17,7 +17,7 @@ let strip_inline_comment value =
             | Some opening, character when character = opening ->
                 find (index + 1) None
             | Some _, _ -> find (index + 1) quote
-            | None, ('"' | '\'' as character) ->
+            | None, ('"' | '\'' as character) when index = 0 ->
                 find (index + 1) (Some character)
             | None, '#'
               when index = 0
