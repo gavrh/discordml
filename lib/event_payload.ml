@@ -98,3 +98,11 @@ module Message_poll_vote = struct
   let answer_id (t : t) : int = t.answer_id
   let poll (t : t) : Poll.t option = t.poll
 end
+
+module Guild_delete = struct
+  type t = { id : string; unavailable : bool; guild : Guild.t option }
+
+  let id (t : t) : string = t.id
+  let unavailable (t : t) : bool = t.unavailable
+  let guild (t : t) : Guild.t option = t.guild
+end

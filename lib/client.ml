@@ -60,12 +60,12 @@ module type Client = sig
   val on_subscription_create : t -> (t -> unit) -> unit
   val on_subscription_update : t -> (t -> unit) -> unit
   val on_subscription_delete : t -> (t -> unit) -> unit
-  val on_guild_create : t -> (t -> unit) -> unit
-  val on_guild_update : t -> (t -> unit) -> unit
-  val on_guild_delete : t -> (t -> unit) -> unit
+  val on_guild_create : t -> (t -> Guild.t -> unit) -> unit
+  val on_guild_update : t -> (t -> Guild.t option -> Guild.t -> unit) -> unit
+  val on_guild_delete : t -> (t -> Event_payload.Guild_delete.t -> unit) -> unit
   val on_guild_audit_log_entry_create : t -> (t -> unit) -> unit
-  val on_guild_ban_add : t -> (t -> unit) -> unit
-  val on_guild_ban_remove : t -> (t -> unit) -> unit
+  val on_guild_ban_add : t -> (t -> Guild_ban.t -> unit) -> unit
+  val on_guild_ban_remove : t -> (t -> Guild_ban.t -> unit) -> unit
   val on_guild_emojis_update : t -> (t -> unit) -> unit
   val on_guild_stickers_update : t -> (t -> unit) -> unit
   val on_guild_integrations_update : t -> (t -> unit) -> unit
@@ -1453,24 +1453,41 @@ include (
     let on_subscription_delete (c : t) (f : t -> unit) : unit =
       add_untyped_handler c Discord_private.P_event.Subscription_delete f
 
-    let on_guild_create (c : t) (f : t -> unit) : unit =
-      add_untyped_handler c Discord_private.P_event.Guild_create f
+    let on_guild_create (c : t) (f : t -> Guild.t -> unit) : unit =
+      add_decoded_handler c Discord_private.P_event.Guild_create Guild.of_yojson
+        f
 
-    let on_guild_update (c : t) (f : t -> unit) : unit =
-      add_untyped_handler c Discord_private.P_event.Guild_update f
+    let on_guild_update (c : t) (f : t -> Guild.t option -> Guild.t -> unit) :
+        unit =
+      add_handler c Discord_private.P_event.Guild_update (fun t snap json ->
+          match Guild.of_yojson json with
+          | Ok guild -> f t snap.guild guild
+          | Error msg -> log_decode_error c "GUILD_UPDATE" msg)
 
-    let on_guild_delete (c : t) (f : t -> unit) : unit =
-      add_untyped_handler c Discord_private.P_event.Guild_delete f
+    let on_guild_delete (c : t) (f : t -> Event_payload.Guild_delete.t -> unit)
+        : unit =
+      add_handler c Discord_private.P_event.Guild_delete (fun t snap json ->
+          let open Yojson.Safe.Util in
+          match json |> member "id" |> to_string_option with
+          | Some id ->
+              let unavailable =
+                json |> member "unavailable" |> to_bool_option
+                |> Option.value ~default:false
+              in
+              f t { id; unavailable; guild = snap.guild }
+          | None -> ())
 
     let on_guild_audit_log_entry_create (c : t) (f : t -> unit) : unit =
       add_untyped_handler c Discord_private.P_event.Guild_audit_log_entry_create
         f
 
-    let on_guild_ban_add (c : t) (f : t -> unit) : unit =
-      add_untyped_handler c Discord_private.P_event.Guild_ban_add f
+    let on_guild_ban_add (c : t) (f : t -> Guild_ban.t -> unit) : unit =
+      add_decoded_handler c Discord_private.P_event.Guild_ban_add
+        Guild_ban.of_yojson f
 
-    let on_guild_ban_remove (c : t) (f : t -> unit) : unit =
-      add_untyped_handler c Discord_private.P_event.Guild_ban_remove f
+    let on_guild_ban_remove (c : t) (f : t -> Guild_ban.t -> unit) : unit =
+      add_decoded_handler c Discord_private.P_event.Guild_ban_remove
+        Guild_ban.of_yojson f
 
     let on_guild_emojis_update (c : t) (f : t -> unit) : unit =
       add_untyped_handler c Discord_private.P_event.Guild_emojis_update f
