@@ -643,7 +643,11 @@ include (struct
                           ~message_id:(Message_update.id update)
                   with
                   | Some cached ->
-                      put_message c (Message_update.apply cached update)
+                      let merged = Message_update.apply cached update in
+                      put_message c merged;
+                      (match Message_update.reactions update with
+                       | None -> ()
+                       | Some _ -> refresh_message_reactions c merged)
                   | None -> ()))
         | Discord_private.P_event.Message_delete ->
             (match ( json |> member "channel_id" |> to_string_option,
