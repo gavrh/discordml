@@ -1053,7 +1053,7 @@ include (struct
                 ~message_id:update.message_id
                 ~emoji:(Reaction.emoji reaction)
                 ~count:(Reaction.count reaction + 1)
-                ~me:(Reaction.me reaction || is_me) ~count_details
+                ~me:(Reaction.me reaction || (is_me && not update.burst)) ~count_details
                 ~burst_colors
                 ~me_burst:
                     (Reaction.me_burst reaction || (is_me && update.burst))
@@ -1065,7 +1065,7 @@ include (struct
             in
             Reaction.make ~channel_id:update.channel_id
                 ~message_id:update.message_id ~emoji:update.emoji ~count:1
-                ~me:is_me ~count_details ~burst_colors:update.burst_colors
+                ~me:(is_me && not update.burst) ~count_details ~burst_colors:update.burst_colors
                 ~me_burst:(is_me && update.burst)
 
     let removed_reaction (update : reaction_event)
