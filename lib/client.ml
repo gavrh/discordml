@@ -356,6 +356,7 @@ include (struct
         unit =
         Eio.Mutex.use_rw ~protect:true c.thread_members_mutex (fun () ->
             Hashtbl.remove c.thread_members (thread_id, user_id))
+
     let put_scheduled_event (c : t) (e : Guild_scheduled_event.t) : unit =
         Eio.Mutex.use_rw ~protect:true c.scheduled_events_mutex (fun () ->
             Hashtbl.replace c.scheduled_events
@@ -412,6 +413,15 @@ include (struct
             put_member c guild_id (User.id (Member.user m)) m;
             m
 
+    let channel_ids_for_guild (c : t) (guild_id : string) : string list =
+        Eio.Mutex.use_ro c.channels_mutex (fun () ->
+            Hashtbl.fold
+                (fun channel_id ch acc ->
+                   match Channel.guild_id ch with
+                   | Some g when g = guild_id -> channel_id :: acc
+                   | _ -> acc)
+                c.channels [])
+
     let drop_guild_channels (c : t) (guild_id : string) : unit =
         Eio.Mutex.use_rw ~protect:true c.channels_mutex (fun () ->
             Hashtbl.filter_map_inplace
@@ -432,6 +442,68 @@ include (struct
             Hashtbl.filter_map_inplace
                 (fun (g, _) p -> if g = guild_id then None else Some p)
                 c.presences)
+
+    let drop_guild_roles (c : t) (guild_id : string) : unit =
+        Eio.Mutex.use_rw ~protect:true c.roles_mutex (fun () ->
+            Hashtbl.filter_map_inplace
+                (fun (g, _) r -> if g = guild_id then None else Some r)
+                c.roles)
+
+    let drop_guild_scheduled_events (c : t) (guild_id : string) : unit =
+        Eio.Mutex.use_rw ~protect:true c.scheduled_events_mutex (fun () ->
+            Hashtbl.filter_map_inplace
+                (fun (g, _) e -> if g = guild_id then None else Some e)
+                c.scheduled_events)
+
+    let drop_guild_stage_instances (c : t) (guild_id : string) : unit =
+        Eio.Mutex.use_rw ~protect:true c.stage_instances_mutex (fun () ->
+            Hashtbl.filter_map_inplace
+                (fun (g, _) s -> if g = guild_id then None else Some s)
+                c.stage_instances)
+
+    let drop_guild_auto_moderation_rules (c : t) (guild_id : string) : unit =
+        Eio.Mutex.use_rw ~protect:true c.auto_moderation_rules_mutex
+            (fun () ->
+               Hashtbl.filter_map_inplace
+                   (fun (g, _) r -> if g = guild_id then None else Some r)
+                   c.auto_moderation_rules)
+
+    let drop_guild_thread_members (c : t) (thread_ids : string list) : unit =
+        Eio.Mutex.use_rw ~protect:true c.thread_members_mutex (fun () ->
+            Hashtbl.filter_map_inplace
+                (fun (thread_id, _) tm ->
+                   if List.mem thread_id thread_ids then None else Some tm)
+                c.thread_members)
+
+    let drop_channel_messages (c : t) (channel_id : string) : string list =
+        Eio.Mutex.use_rw ~protect:true c.messages_mutex (fun () ->
+            let message_ids =
+                Hashtbl.fold
+                    (fun (cid, message_id) _ acc ->
+                       if cid = channel_id then message_id :: acc else acc)
+                    c.messages []
+            in
+            List.iter
+                (fun message_id ->
+                   Hashtbl.remove c.messages (channel_id, message_id))
+                message_ids;
+            message_ids)
+
+    let drop_guild_messages (c : t) (channel_ids : string list) : string list =
+        Eio.Mutex.use_rw ~protect:true c.messages_mutex (fun () ->
+            let message_ids =
+                Hashtbl.fold
+                    (fun (channel_id, message_id) _ acc ->
+                       if List.mem channel_id channel_ids then
+                           message_id :: acc
+                       else acc)
+                    c.messages []
+            in
+            Hashtbl.filter_map_inplace
+                (fun (channel_id, _) m ->
+                   if List.mem channel_id channel_ids then None else Some m)
+                c.messages;
+            message_ids)
 
     let cache_event (c : t) (event : Discord_private.P_event.t)
         (json : Yojson.Safe.t) : unit =
@@ -479,11 +551,19 @@ include (struct
         | Discord_private.P_event.Guild_delete ->
             (match json |> member "id" |> to_string_option with
              | Some guild_id ->
+                 let channel_ids = channel_ids_for_guild c guild_id in
                  Eio.Mutex.use_rw ~protect:true c.guilds_mutex (fun () ->
                      Hashtbl.remove c.guilds guild_id);
                  drop_guild_channels c guild_id;
                  drop_guild_members c guild_id;
-                 drop_guild_presences c guild_id
+                 drop_guild_presences c guild_id;
+                 drop_guild_roles c guild_id;
+                 drop_guild_scheduled_events c guild_id;
+                 drop_guild_stage_instances c guild_id;
+                 drop_guild_auto_moderation_rules c guild_id;
+                 drop_guild_thread_members c channel_ids;
+                 let message_ids = drop_guild_messages c channel_ids in
+                 drop_reactions c message_ids
              | None -> ())
         | Discord_private.P_event.Channel_create
         | Discord_private.P_event.Channel_update ->
@@ -502,7 +582,11 @@ include (struct
         | Discord_private.P_event.Channel_delete
         | Discord_private.P_event.Thread_delete ->
             (match json |> member "id" |> to_string_option with
-             | Some cid -> remove_channel c cid
+             | Some cid ->
+                 remove_channel c cid;
+                 drop_guild_thread_members c [cid];
+                 let message_ids = drop_channel_messages c cid in
+                 drop_reactions c message_ids
              | None -> ())
         | Discord_private.P_event.Guild_member_add
         | Discord_private.P_event.Guild_member_update ->
