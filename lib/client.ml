@@ -69,13 +69,23 @@ module type Client = sig
   val on_guild_emojis_update : t -> (t -> unit) -> unit
   val on_guild_stickers_update : t -> (t -> unit) -> unit
   val on_guild_integrations_update : t -> (t -> unit) -> unit
-  val on_guild_member_add : t -> (t -> unit) -> unit
-  val on_guild_member_remove : t -> (t -> unit) -> unit
-  val on_guild_member_update : t -> (t -> unit) -> unit
-  val on_guild_members_chunk : t -> (t -> unit) -> unit
-  val on_guild_role_create : t -> (t -> unit) -> unit
-  val on_guild_role_update : t -> (t -> unit) -> unit
-  val on_guild_role_delete : t -> (t -> unit) -> unit
+  val on_guild_member_add : t -> (t -> Member.t -> unit) -> unit
+
+  val on_guild_member_remove :
+    t -> (t -> Event_payload.Member_remove.t -> unit) -> unit
+
+  val on_guild_member_update :
+    t -> (t -> Member.t option -> Member.t -> unit) -> unit
+
+  val on_guild_members_chunk :
+    t -> (t -> Event_payload.Guild_members_chunk.t -> unit) -> unit
+
+  val on_guild_role_create : t -> (t -> Role.t -> unit) -> unit
+  val on_guild_role_update : t -> (t -> Role.t option -> Role.t -> unit) -> unit
+
+  val on_guild_role_delete :
+    t -> (t -> Event_payload.Role_delete.t -> unit) -> unit
+
   val on_guild_scheduled_event_create : t -> (t -> unit) -> unit
   val on_guild_scheduled_event_update : t -> (t -> unit) -> unit
   val on_guild_scheduled_event_delete : t -> (t -> unit) -> unit
@@ -1352,6 +1362,22 @@ include (
           | Error msg ->
               log_decode_error c (Discord_private.P_event.to_string event) msg)
 
+    let decode_list (c : t) (name : string)
+        (of_yojson : Yojson.Safe.t -> ('a, string) result)
+        (json : Yojson.Safe.t) (field : string) : 'a list =
+      let open Yojson.Safe.Util in
+      match json |> member field with
+      | `List items ->
+          List.filter_map
+            (fun item ->
+              match of_yojson item with
+              | Ok value -> Some value
+              | Error msg ->
+                  log_decode_error c name msg;
+                  None)
+            items
+      | _ -> []
+
     let add_message_handler (c : t) (f : t -> Message.t -> unit) : unit =
       let rec add () =
         let old = Atomic.get c.message_handlers in
@@ -1498,26 +1524,80 @@ include (
     let on_guild_integrations_update (c : t) (f : t -> unit) : unit =
       add_untyped_handler c Discord_private.P_event.Guild_integrations_update f
 
-    let on_guild_member_add (c : t) (f : t -> unit) : unit =
-      add_untyped_handler c Discord_private.P_event.Guild_member_add f
+    let on_guild_member_add (c : t) (f : t -> Member.t -> unit) : unit =
+      add_decoded_handler c Discord_private.P_event.Guild_member_add
+        Member.of_yojson f
 
-    let on_guild_member_remove (c : t) (f : t -> unit) : unit =
-      add_untyped_handler c Discord_private.P_event.Guild_member_remove f
+    let on_guild_member_remove (c : t)
+        (f : t -> Event_payload.Member_remove.t -> unit) : unit =
+      add_handler c Discord_private.P_event.Guild_member_remove
+        (fun t snap json ->
+          let open Yojson.Safe.Util in
+          match
+            ( json |> member "guild_id" |> to_string_option,
+              User.of_yojson (json |> member "user") )
+          with
+          | Some guild_id, Ok user ->
+              f t { guild_id; user; member = snap.member }
+          | Some _, Error msg -> log_decode_error c "GUILD_MEMBER_REMOVE" msg
+          | None, _ -> ())
 
-    let on_guild_member_update (c : t) (f : t -> unit) : unit =
-      add_untyped_handler c Discord_private.P_event.Guild_member_update f
+    let on_guild_member_update (c : t)
+        (f : t -> Member.t option -> Member.t -> unit) : unit =
+      add_handler c Discord_private.P_event.Guild_member_update
+        (fun t snap json ->
+          match Member.of_yojson json with
+          | Ok member -> f t snap.member member
+          | Error msg -> log_decode_error c "GUILD_MEMBER_UPDATE" msg)
 
-    let on_guild_members_chunk (c : t) (f : t -> unit) : unit =
-      add_untyped_handler c Discord_private.P_event.Guild_members_chunk f
+    let on_guild_members_chunk (c : t)
+        (f : t -> Event_payload.Guild_members_chunk.t -> unit) : unit =
+      add_handler c Discord_private.P_event.Guild_members_chunk
+        (fun t snap json ->
+          let open Yojson.Safe.Util in
+          let members =
+            decode_list c "GUILD_MEMBERS_CHUNK" Member.of_yojson json "members"
+          in
+          let count =
+            json |> member "chunk_count" |> to_int_option
+            |> Option.value ~default:0
+          in
+          let index =
+            json |> member "chunk_index" |> to_int_option
+            |> Option.value ~default:0
+          in
+          let nonce = json |> member "nonce" |> to_string_option in
+          let not_found = string_list (json |> member "not_found") in
+          f t { members; guild = snap.guild; count; index; nonce; not_found })
 
-    let on_guild_role_create (c : t) (f : t -> unit) : unit =
-      add_untyped_handler c Discord_private.P_event.Guild_role_create f
+    let role_of_json (json : Yojson.Safe.t) : (Role.t, string) result =
+      let open Yojson.Safe.Util in
+      Role.of_yojson (json |> member "role")
 
-    let on_guild_role_update (c : t) (f : t -> unit) : unit =
-      add_untyped_handler c Discord_private.P_event.Guild_role_update f
+    let on_guild_role_create (c : t) (f : t -> Role.t -> unit) : unit =
+      add_decoded_handler c Discord_private.P_event.Guild_role_create
+        role_of_json f
 
-    let on_guild_role_delete (c : t) (f : t -> unit) : unit =
-      add_untyped_handler c Discord_private.P_event.Guild_role_delete f
+    let on_guild_role_update (c : t) (f : t -> Role.t option -> Role.t -> unit)
+        : unit =
+      add_handler c Discord_private.P_event.Guild_role_update
+        (fun t snap json ->
+          match role_of_json json with
+          | Ok role -> f t snap.role role
+          | Error msg -> log_decode_error c "GUILD_ROLE_UPDATE" msg)
+
+    let on_guild_role_delete (c : t)
+        (f : t -> Event_payload.Role_delete.t -> unit) : unit =
+      add_handler c Discord_private.P_event.Guild_role_delete
+        (fun t snap json ->
+          let open Yojson.Safe.Util in
+          match
+            ( json |> member "guild_id" |> to_string_option,
+              json |> member "role_id" |> to_string_option )
+          with
+          | Some guild_id, Some role_id ->
+              f t { guild_id; role_id; role = snap.role }
+          | _ -> ())
 
     let on_guild_scheduled_event_create (c : t) (f : t -> unit) : unit =
       add_untyped_handler c Discord_private.P_event.Guild_scheduled_event_create

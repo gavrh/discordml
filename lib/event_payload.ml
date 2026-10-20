@@ -106,3 +106,37 @@ module Guild_delete = struct
   let unavailable (t : t) : bool = t.unavailable
   let guild (t : t) : Guild.t option = t.guild
 end
+
+module Role_delete = struct
+  type t = { guild_id : string; role_id : string; role : Role.t option }
+
+  let guild_id (t : t) : string = t.guild_id
+  let role_id (t : t) : string = t.role_id
+  let role (t : t) : Role.t option = t.role
+end
+
+module Member_remove = struct
+  type t = { guild_id : string; user : User.t; member : Member.t option }
+
+  let guild_id (t : t) : string = t.guild_id
+  let user (t : t) : User.t = t.user
+  let member (t : t) : Member.t option = t.member
+end
+
+module Guild_members_chunk = struct
+  type t = {
+    members : Member.t list;
+    guild : Guild.t option;
+    count : int;
+    index : int;
+    nonce : string option;
+    not_found : string list;
+  }
+
+  let members (t : t) : Member.t list = t.members
+  let guild (t : t) : Guild.t option = t.guild
+  let count (t : t) : int = t.count
+  let index (t : t) : int = t.index
+  let nonce (t : t) : string option = t.nonce
+  let not_found (t : t) : string list = t.not_found
+end
