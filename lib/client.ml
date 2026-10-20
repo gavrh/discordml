@@ -807,6 +807,14 @@ include (struct
                           json |> member "burst" |> to_bool_option
                           |> Option.value ~default:false
                       in
+                      let user_id =
+                          json |> member "user_id" |> to_string_option
+                      in
+                      let is_me =
+                          match c.user, user_id with
+                          | Some u, Some id -> User.id u = id
+                          | _ -> false
+                      in
                       Eio.Mutex.use_rw ~protect:true c.reactions_mutex
                           (fun () ->
                              let key = (message_id, Emoji.identifier emoji) in
@@ -845,11 +853,16 @@ include (struct
                                             ~message_id
                                             ~emoji:(Reaction.emoji r)
                                             ~count:(count - 1)
-                                            ~me:(Reaction.me r)
+                                            ~me:
+                                                (if is_me && not burst then
+                                                     false
+                                                 else Reaction.me r)
                                             ~count_details
                                             ~burst_colors:
                                                 (Reaction.burst_colors r)
-                                            ~me_burst:(Reaction.me_burst r))
+                                            ~me_burst:
+                                                (if is_me && burst then false
+                                                 else Reaction.me_burst r))
                                  end)
                   | None -> ()))
         | Discord_private.P_event.Message_reaction_remove_all ->
