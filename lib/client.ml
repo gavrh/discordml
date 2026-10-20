@@ -95,20 +95,30 @@ module type Client = sig
     val on_invite_create : t -> (t -> unit) -> unit
     val on_invite_delete : t -> (t -> unit) -> unit
     val on_message : t -> (t -> Message.t -> unit) -> unit
-    val on_message_update : t -> (t -> unit) -> unit
-    val on_message_delete : t -> (t -> unit) -> unit
-    val on_message_delete_bulk : t -> (t -> unit) -> unit
-    val on_message_reaction_add : t -> (t -> unit) -> unit
-    val on_message_reaction_remove : t -> (t -> unit) -> unit
-    val on_message_reaction_remove_all : t -> (t -> unit) -> unit
-    val on_message_reaction_remove_emoji : t -> (t -> unit) -> unit
-    val on_message_poll_vote_add : t -> (t -> unit) -> unit
-    val on_message_poll_vote_remove : t -> (t -> unit) -> unit
+    val on_message_update :
+        t -> (t -> Message.t option -> Message_update.t -> unit) -> unit
+    val on_message_delete :
+        t -> (t -> Event_payload.Message_delete.t -> unit) -> unit
+    val on_message_delete_bulk :
+        t -> (t -> Event_payload.Message_delete_bulk.t -> unit) -> unit
+    val on_message_reaction_add :
+        t -> (t -> Event_payload.Message_reaction.t -> unit) -> unit
+    val on_message_reaction_remove :
+        t -> (t -> Event_payload.Message_reaction.t -> unit) -> unit
+    val on_message_reaction_remove_all :
+        t -> (t -> Event_payload.Message_reaction_remove_all.t -> unit) -> unit
+    val on_message_reaction_remove_emoji :
+        t -> (t -> Event_payload.Message_reaction_remove_emoji.t -> unit) ->
+        unit
+    val on_message_poll_vote_add :
+        t -> (t -> Event_payload.Message_poll_vote.t -> unit) -> unit
+    val on_message_poll_vote_remove :
+        t -> (t -> Event_payload.Message_poll_vote.t -> unit) -> unit
     val on_presence_update : t -> (t -> unit) -> unit
     val on_stage_instance_create : t -> (t -> unit) -> unit
     val on_stage_instance_update : t -> (t -> unit) -> unit
     val on_stage_instance_delete : t -> (t -> unit) -> unit
-    val on_typing_start : t -> (t -> unit) -> unit
+    val on_typing_start : t -> (t -> Typing.t -> unit) -> unit
     val on_user_update : t -> (t -> unit) -> unit
     val on_voice_channel_effect_send : t -> (t -> unit) -> unit
     val on_voice_state_update : t -> (t -> unit) -> unit
@@ -149,8 +159,15 @@ include (struct
         decode_errors : string list Atomic.t [@opaque];
         shards : (int, Discord_private.P_shard.t) Hashtbl.t [@printer fun fmt tbl -> Format.fprintf fmt "[ ...%d ]" (Hashtbl.length tbl)];
         shards_mutex : Eio.Mutex.t [@opaque];
-        handlers : (Discord_private.P_event.t, (t -> unit) list) Hashtbl.t Atomic.t [@opaque];
+        handlers : (Discord_private.P_event.t, (t -> Yojson.Safe.t -> unit) list) Hashtbl.t Atomic.t [@opaque];
         message_handlers : (t -> Message.t -> unit) list Atomic.t [@opaque];
+        message_update_handlers : (t -> Message.t option -> Message_update.t -> unit) list Atomic.t [@opaque];
+        message_delete_handlers : (t -> Event_payload.Message_delete.t -> unit) list Atomic.t [@opaque];
+        message_delete_bulk_handlers : (t -> Event_payload.Message_delete_bulk.t -> unit) list Atomic.t [@opaque];
+        message_reaction_add_handlers : (t -> Event_payload.Message_reaction.t -> unit) list Atomic.t [@opaque];
+        message_reaction_remove_handlers : (t -> Event_payload.Message_reaction.t -> unit) list Atomic.t [@opaque];
+        message_reaction_remove_all_handlers : (t -> Event_payload.Message_reaction_remove_all.t -> unit) list Atomic.t [@opaque];
+        message_reaction_remove_emoji_handlers : (t -> Event_payload.Message_reaction_remove_emoji.t -> unit) list Atomic.t [@opaque];
         mutable user : User.t option [@printer fun fmt u ->
             match u with
             | Some u -> Format.pp_print_string fmt (User.show u)
@@ -505,6 +522,14 @@ include (struct
                 c.messages;
             message_ids)
 
+    let string_list (json : Yojson.Safe.t) : string list =
+        match json with
+        | `List l ->
+            List.filter_map
+                (function `String s -> Some s | _ -> None)
+                l
+        | _ -> []
+
     let cache_event (c : t) (event : Discord_private.P_event.t)
         (json : Yojson.Safe.t) : unit =
         let open Yojson.Safe.Util in
@@ -513,14 +538,6 @@ include (struct
             match of_yojson json with
             | Ok v -> on_ok v
             | Error msg -> log_decode_error c name msg
-        in
-        let string_list (json : Yojson.Safe.t) : string list =
-            match json with
-            | `List l ->
-                List.filter_map
-                    (function `String s -> Some s | _ -> None)
-                    l
-            | _ -> []
         in
         match event with
         | Discord_private.P_event.Ready ->
@@ -617,11 +634,17 @@ include (struct
                  put_user c (Presence.user p)
              | Error msg -> log_decode_error c name msg)
         | Discord_private.P_event.Message_update ->
-            decode Message.of_yojson (fun m ->
-                put_message c m;
-                match json |> member "reactions" with
-                | `Null -> ()
-                | _ -> refresh_message_reactions c m)
+            (match Message_update.of_yojson json with
+             | Error msg -> log_decode_error c name msg
+             | Ok update ->
+                 (match
+                      message c
+                          ~channel_id:(Message_update.channel_id update)
+                          ~message_id:(Message_update.id update)
+                  with
+                  | Some cached ->
+                      put_message c (Message_update.apply cached update)
+                  | None -> ()))
         | Discord_private.P_event.Message_delete ->
             (match ( json |> member "channel_id" |> to_string_option,
                      json |> member "id" |> to_string_option ) with
@@ -880,7 +903,268 @@ include (struct
                   | None -> ()))
         | _ -> ()
 
-    let add_handler (c : t) (event : Discord_private.P_event.t) (f : t -> unit) : unit =
+    type reaction_event = {
+        channel_id : string;
+        message_id : string;
+        guild_id : string option;
+        user_id : string;
+        emoji : Emoji.t;
+        burst : bool;
+        type_ : int;
+        burst_colors : string list;
+    }
+
+    let reaction_event_of_yojson (json : Yojson.Safe.t) :
+        (reaction_event, string) result =
+        let open Yojson.Safe.Util in
+        try
+            let emoji =
+                match Emoji.of_yojson (json |> member "emoji") with
+                | Ok emoji -> emoji
+                | Error msg -> raise (Failure msg)
+            in
+            Ok
+                { channel_id = json |> member "channel_id" |> to_string;
+                  message_id = json |> member "message_id" |> to_string;
+                  guild_id = json |> member "guild_id" |> to_string_option;
+                  user_id = json |> member "user_id" |> to_string;
+                  emoji;
+                  burst =
+                    json |> member "burst" |> to_bool_option
+                    |> Option.value ~default:false;
+                  type_ =
+                    json |> member "type" |> to_int_option
+                    |> Option.value ~default:0;
+                  burst_colors = string_list (json |> member "burst_colors") }
+        with
+        | Type_error (msg, _) -> Error msg
+        | Undefined (msg, _) -> Error msg
+        | Failure msg -> Error msg
+
+    let cache_payload_member (c : t) (name : string)
+            (guild_id : string option) (json : Yojson.Safe.t) : unit =
+        let open Yojson.Safe.Util in
+        match json |> member "member" with
+        | `Null -> ()
+        | member_json ->
+            (match Member.of_yojson member_json with
+             | Ok member ->
+                 (match guild_id with
+                  | Some guild_id ->
+                      put_member c guild_id (User.id (Member.user member))
+                          member
+                  | None -> ());
+                 put_user c (Member.user member)
+             | Error msg -> log_decode_error c name msg)
+
+    let reactions_for_message (c : t) (message_id : string) :
+        Reaction.t list =
+        Eio.Mutex.use_ro c.reactions_mutex (fun () ->
+            Hashtbl.fold
+                (fun (id, _) reaction acc ->
+                   if id = message_id then reaction :: acc else acc)
+                c.reactions [])
+
+    let dispatch_message_update ~sw (c : t) (json : Yojson.Safe.t) : unit =
+        match Message_update.of_yojson json with
+        | Error msg -> log_decode_error c "MESSAGE_UPDATE" msg
+        | Ok update ->
+            let old =
+                message c
+                    ~channel_id:(Message_update.channel_id update)
+                    ~message_id:(Message_update.id update)
+            in
+            cache_event c Discord_private.P_event.Message_update json;
+            (match Message_update.author update with
+             | Some author -> put_user c author
+             | None -> ());
+            List.iter
+                (fun f -> Eio.Fiber.fork ~sw (fun () -> f c old update))
+                (Atomic.get c.message_update_handlers)
+
+    let dispatch_message_delete ~sw (c : t) (json : Yojson.Safe.t) : unit =
+        let open Yojson.Safe.Util in
+        match ( json |> member "channel_id" |> to_string_option,
+                json |> member "id" |> to_string_option ) with
+        | Some channel_id, Some id ->
+            let guild_id = json |> member "guild_id" |> to_string_option in
+            let cached_message = message c ~channel_id ~message_id:id in
+            cache_event c Discord_private.P_event.Message_delete json;
+            let payload : Event_payload.Message_delete.t =
+                { id; channel_id; guild_id; message = cached_message }
+            in
+            List.iter
+                (fun f -> Eio.Fiber.fork ~sw (fun () -> f c payload))
+                (Atomic.get c.message_delete_handlers)
+        | _ -> ()
+
+    let dispatch_message_delete_bulk ~sw (c : t) (json : Yojson.Safe.t) :
+        unit =
+        let open Yojson.Safe.Util in
+        match json |> member "channel_id" |> to_string_option with
+        | Some channel_id ->
+            let guild_id = json |> member "guild_id" |> to_string_option in
+            let ids = string_list (json |> member "ids") in
+            let messages =
+                List.filter_map
+                    (fun id -> message c ~channel_id ~message_id:id)
+                    ids
+            in
+            let channel = channel c channel_id in
+            cache_event c Discord_private.P_event.Message_delete_bulk json;
+            let payload : Event_payload.Message_delete_bulk.t =
+                { ids; channel_id; guild_id; messages; channel }
+            in
+            List.iter
+                (fun f -> Eio.Fiber.fork ~sw (fun () -> f c payload))
+                (Atomic.get c.message_delete_bulk_handlers)
+        | None -> ()
+
+    let dispatch_reaction ~sw (c : t)
+            (event : Discord_private.P_event.t) (json : Yojson.Safe.t) :
+        unit =
+        let name = Discord_private.P_event.to_string event in
+        match reaction_event_of_yojson json with
+        | Error msg -> log_decode_error c name msg
+        | Ok update ->
+            cache_payload_member c name update.guild_id json;
+            let emoji = Emoji.identifier update.emoji in
+            let previous =
+                reaction c ~message_id:update.message_id ~emoji
+            in
+            cache_event c event json;
+            let current = reaction c ~message_id:update.message_id ~emoji in
+            let is_me =
+                match c.user with
+                | Some user -> User.id user = update.user_id
+                | None -> false
+            in
+            let reaction =
+                match current with
+                | Some reaction -> reaction
+                | None ->
+                    (match previous with
+                     | Some reaction ->
+                         let count = Reaction.count reaction in
+                         let details = Reaction.count_details reaction in
+                         let count_details =
+                             if update.burst then
+                                 Reaction.Count_details.make
+                                     ~burst:
+                                         (max 0
+                                              (Reaction.Count_details.burst
+                                                   details
+                                               - 1))
+                                     ~normal:
+                                         (Reaction.Count_details.normal
+                                              details)
+                             else
+                                 Reaction.Count_details.make
+                                     ~burst:
+                                         (Reaction.Count_details.burst
+                                              details)
+                                     ~normal:
+                                         (max 0
+                                              (Reaction.Count_details.normal
+                                                   details
+                                               - 1))
+                         in
+                         Reaction.make
+                             ~channel_id:(Reaction.channel_id reaction)
+                             ~message_id:update.message_id
+                             ~emoji:(Reaction.emoji reaction)
+                             ~count:(max 0 (count - 1))
+                             ~me:
+                                 (if is_me && not update.burst then false
+                                  else Reaction.me reaction)
+                             ~count_details
+                             ~burst_colors:(Reaction.burst_colors reaction)
+                             ~me_burst:
+                                 (if is_me && update.burst then false
+                                  else Reaction.me_burst reaction)
+                     | None ->
+                         Reaction.make ~channel_id:update.channel_id
+                             ~message_id:update.message_id ~emoji:update.emoji
+                             ~count:0 ~me:false
+                             ~count_details:
+                                 (Reaction.Count_details.make ~burst:0
+                                    ~normal:0)
+                             ~burst_colors:update.burst_colors ~me_burst:false)
+            in
+            let user = user_by_id c update.user_id in
+            let payload : Event_payload.Message_reaction.t =
+                { reaction;
+                  user_id = update.user_id;
+                  user;
+                  details = { burst = update.burst; type_ = update.type_ } }
+            in
+            let handlers =
+                match event with
+                | Discord_private.P_event.Message_reaction_add ->
+                    Atomic.get c.message_reaction_add_handlers
+                | _ -> Atomic.get c.message_reaction_remove_handlers
+            in
+            List.iter
+                (fun f -> Eio.Fiber.fork ~sw (fun () -> f c payload))
+                handlers
+
+    let dispatch_reaction_remove_all ~sw (c : t) (json : Yojson.Safe.t) :
+        unit =
+        let open Yojson.Safe.Util in
+        match ( json |> member "channel_id" |> to_string_option,
+                json |> member "message_id" |> to_string_option ) with
+        | Some channel_id, Some message_id ->
+            let guild_id = json |> member "guild_id" |> to_string_option in
+            let cached_message = message c ~channel_id ~message_id in
+            let reactions = reactions_for_message c message_id in
+            cache_event c
+                Discord_private.P_event.Message_reaction_remove_all json;
+            let payload : Event_payload.Message_reaction_remove_all.t =
+                { message_id;
+                  channel_id;
+                  guild_id;
+                  message = cached_message;
+                  reactions }
+            in
+            List.iter
+                (fun f -> Eio.Fiber.fork ~sw (fun () -> f c payload))
+                (Atomic.get c.message_reaction_remove_all_handlers)
+        | _ -> ()
+
+    let dispatch_reaction_remove_emoji ~sw (c : t)
+            (json : Yojson.Safe.t) : unit =
+        let open Yojson.Safe.Util in
+        let name = "MESSAGE_REACTION_REMOVE_EMOJI" in
+        match Emoji.of_yojson (json |> member "emoji") with
+        | Error msg -> log_decode_error c name msg
+        | Ok emoji ->
+            (match ( json |> member "channel_id" |> to_string_option,
+                     json |> member "message_id" |> to_string_option ) with
+             | Some channel_id, Some message_id ->
+                 let guild_id =
+                     json |> member "guild_id" |> to_string_option
+                 in
+                 let removed =
+                     reaction c ~message_id
+                         ~emoji:(Emoji.identifier emoji)
+                 in
+                 cache_event c
+                     Discord_private.P_event.Message_reaction_remove_emoji
+                     json;
+                 let payload : Event_payload.Message_reaction_remove_emoji.t =
+                     { message_id;
+                       channel_id;
+                       guild_id;
+                       emoji;
+                       reaction = removed }
+                 in
+                 List.iter
+                     (fun f -> Eio.Fiber.fork ~sw (fun () -> f c payload))
+                     (Atomic.get c.message_reaction_remove_emoji_handlers)
+             | _ -> ())
+
+    let add_handler (c : t) (event : Discord_private.P_event.t)
+            (f : t -> Yojson.Safe.t -> unit) : unit =
         let rec add () =
             let old = Atomic.get c.handlers in
             let tbl = Hashtbl.copy old in
@@ -892,6 +1176,21 @@ include (struct
         in
         add ()
 
+    let add_untyped_handler (c : t) (event : Discord_private.P_event.t)
+            (f : t -> unit) : unit =
+        add_handler c event (fun t _ -> f t)
+
+    let add_decoded_handler (c : t) (event : Discord_private.P_event.t)
+            (of_yojson : Yojson.Safe.t -> ('a, string) result)
+            (f : t -> 'a -> unit) : unit =
+        add_handler c event (fun t json ->
+            match of_yojson json with
+            | Ok payload -> f t payload
+            | Error msg ->
+                log_decode_error c
+                    (Discord_private.P_event.to_string event)
+                    msg)
+
     let add_message_handler (c : t) (f : t -> Message.t -> unit) : unit =
         let rec add () =
             let old = Atomic.get c.message_handlers in
@@ -900,239 +1199,309 @@ include (struct
         in
         add ()
 
+    let add_typed (r : 'a list Atomic.t) (f : 'a) : unit =
+        let rec add () =
+            let old = Atomic.get r in
+            if not (Atomic.compare_and_set r old (f :: old)) then add ()
+        in
+        add ()
+
     let on_ready (c : t) (f : t -> unit) : unit =
-        add_handler c Discord_private.P_event.Ready f
+        add_untyped_handler c Discord_private.P_event.Ready f
 
     let on_resumed (c : t) (f : t -> unit) : unit =
-        add_handler c Discord_private.P_event.Resumed f
+        add_untyped_handler c Discord_private.P_event.Resumed f
 
     let on_application_command_permissions_update (c : t) (f : t -> unit) : unit =
-        add_handler c Discord_private.P_event.Application_command_permissions_update f
+        add_untyped_handler c Discord_private.P_event.Application_command_permissions_update f
 
     let on_auto_moderation_rule_create (c : t) (f : t -> unit) : unit =
-        add_handler c Discord_private.P_event.Auto_moderation_rule_create f
+        add_untyped_handler c Discord_private.P_event.Auto_moderation_rule_create f
 
     let on_auto_moderation_rule_update (c : t) (f : t -> unit) : unit =
-        add_handler c Discord_private.P_event.Auto_moderation_rule_update f
+        add_untyped_handler c Discord_private.P_event.Auto_moderation_rule_update f
 
     let on_auto_moderation_rule_delete (c : t) (f : t -> unit) : unit =
-        add_handler c Discord_private.P_event.Auto_moderation_rule_delete f
+        add_untyped_handler c Discord_private.P_event.Auto_moderation_rule_delete f
 
     let on_auto_moderation_action_execution (c : t) (f : t -> unit) : unit =
-        add_handler c Discord_private.P_event.Auto_moderation_action_execution f
+        add_untyped_handler c Discord_private.P_event.Auto_moderation_action_execution f
 
     let on_channel_create (c : t) (f : t -> unit) : unit =
-        add_handler c Discord_private.P_event.Channel_create f
+        add_untyped_handler c Discord_private.P_event.Channel_create f
 
     let on_channel_update (c : t) (f : t -> unit) : unit =
-        add_handler c Discord_private.P_event.Channel_update f
+        add_untyped_handler c Discord_private.P_event.Channel_update f
 
     let on_channel_delete (c : t) (f : t -> unit) : unit =
-        add_handler c Discord_private.P_event.Channel_delete f
+        add_untyped_handler c Discord_private.P_event.Channel_delete f
 
     let on_channel_info (c : t) (f : t -> unit) : unit =
-        add_handler c Discord_private.P_event.Channel_info f
+        add_untyped_handler c Discord_private.P_event.Channel_info f
 
     let on_channel_pins_update (c : t) (f : t -> unit) : unit =
-        add_handler c Discord_private.P_event.Channel_pins_update f
+        add_untyped_handler c Discord_private.P_event.Channel_pins_update f
 
     let on_thread_create (c : t) (f : t -> unit) : unit =
-        add_handler c Discord_private.P_event.Thread_create f
+        add_untyped_handler c Discord_private.P_event.Thread_create f
 
     let on_thread_update (c : t) (f : t -> unit) : unit =
-        add_handler c Discord_private.P_event.Thread_update f
+        add_untyped_handler c Discord_private.P_event.Thread_update f
 
     let on_thread_delete (c : t) (f : t -> unit) : unit =
-        add_handler c Discord_private.P_event.Thread_delete f
+        add_untyped_handler c Discord_private.P_event.Thread_delete f
 
     let on_thread_list_sync (c : t) (f : t -> unit) : unit =
-        add_handler c Discord_private.P_event.Thread_list_sync f
+        add_untyped_handler c Discord_private.P_event.Thread_list_sync f
 
     let on_thread_member_update (c : t) (f : t -> unit) : unit =
-        add_handler c Discord_private.P_event.Thread_member_update f
+        add_untyped_handler c Discord_private.P_event.Thread_member_update f
 
     let on_thread_members_update (c : t) (f : t -> unit) : unit =
-        add_handler c Discord_private.P_event.Thread_members_update f
+        add_untyped_handler c Discord_private.P_event.Thread_members_update f
 
     let on_voice_channel_status_update (c : t) (f : t -> unit) : unit =
-        add_handler c Discord_private.P_event.Voice_channel_status_update f
+        add_untyped_handler c Discord_private.P_event.Voice_channel_status_update f
 
     let on_voice_channel_start_time_update (c : t) (f : t -> unit) : unit =
-        add_handler c Discord_private.P_event.Voice_channel_start_time_update f
+        add_untyped_handler c Discord_private.P_event.Voice_channel_start_time_update f
 
     let on_entitlement_create (c : t) (f : t -> unit) : unit =
-        add_handler c Discord_private.P_event.Entitlement_create f
+        add_untyped_handler c Discord_private.P_event.Entitlement_create f
 
     let on_entitlement_update (c : t) (f : t -> unit) : unit =
-        add_handler c Discord_private.P_event.Entitlement_update f
+        add_untyped_handler c Discord_private.P_event.Entitlement_update f
 
     let on_entitlement_delete (c : t) (f : t -> unit) : unit =
-        add_handler c Discord_private.P_event.Entitlement_delete f
+        add_untyped_handler c Discord_private.P_event.Entitlement_delete f
 
     let on_subscription_create (c : t) (f : t -> unit) : unit =
-        add_handler c Discord_private.P_event.Subscription_create f
+        add_untyped_handler c Discord_private.P_event.Subscription_create f
 
     let on_subscription_update (c : t) (f : t -> unit) : unit =
-        add_handler c Discord_private.P_event.Subscription_update f
+        add_untyped_handler c Discord_private.P_event.Subscription_update f
 
     let on_subscription_delete (c : t) (f : t -> unit) : unit =
-        add_handler c Discord_private.P_event.Subscription_delete f
+        add_untyped_handler c Discord_private.P_event.Subscription_delete f
 
     let on_guild_create (c : t) (f : t -> unit) : unit =
-        add_handler c Discord_private.P_event.Guild_create f
+        add_untyped_handler c Discord_private.P_event.Guild_create f
 
     let on_guild_update (c : t) (f : t -> unit) : unit =
-        add_handler c Discord_private.P_event.Guild_update f
+        add_untyped_handler c Discord_private.P_event.Guild_update f
 
     let on_guild_delete (c : t) (f : t -> unit) : unit =
-        add_handler c Discord_private.P_event.Guild_delete f
+        add_untyped_handler c Discord_private.P_event.Guild_delete f
 
     let on_guild_audit_log_entry_create (c : t) (f : t -> unit) : unit =
-        add_handler c Discord_private.P_event.Guild_audit_log_entry_create f
+        add_untyped_handler c Discord_private.P_event.Guild_audit_log_entry_create f
 
     let on_guild_ban_add (c : t) (f : t -> unit) : unit =
-        add_handler c Discord_private.P_event.Guild_ban_add f
+        add_untyped_handler c Discord_private.P_event.Guild_ban_add f
 
     let on_guild_ban_remove (c : t) (f : t -> unit) : unit =
-        add_handler c Discord_private.P_event.Guild_ban_remove f
+        add_untyped_handler c Discord_private.P_event.Guild_ban_remove f
 
     let on_guild_emojis_update (c : t) (f : t -> unit) : unit =
-        add_handler c Discord_private.P_event.Guild_emojis_update f
+        add_untyped_handler c Discord_private.P_event.Guild_emojis_update f
 
     let on_guild_stickers_update (c : t) (f : t -> unit) : unit =
-        add_handler c Discord_private.P_event.Guild_stickers_update f
+        add_untyped_handler c Discord_private.P_event.Guild_stickers_update f
 
     let on_guild_integrations_update (c : t) (f : t -> unit) : unit =
-        add_handler c Discord_private.P_event.Guild_integrations_update f
+        add_untyped_handler c Discord_private.P_event.Guild_integrations_update f
 
     let on_guild_member_add (c : t) (f : t -> unit) : unit =
-        add_handler c Discord_private.P_event.Guild_member_add f
+        add_untyped_handler c Discord_private.P_event.Guild_member_add f
 
     let on_guild_member_remove (c : t) (f : t -> unit) : unit =
-        add_handler c Discord_private.P_event.Guild_member_remove f
+        add_untyped_handler c Discord_private.P_event.Guild_member_remove f
 
     let on_guild_member_update (c : t) (f : t -> unit) : unit =
-        add_handler c Discord_private.P_event.Guild_member_update f
+        add_untyped_handler c Discord_private.P_event.Guild_member_update f
 
     let on_guild_members_chunk (c : t) (f : t -> unit) : unit =
-        add_handler c Discord_private.P_event.Guild_members_chunk f
+        add_untyped_handler c Discord_private.P_event.Guild_members_chunk f
 
     let on_guild_role_create (c : t) (f : t -> unit) : unit =
-        add_handler c Discord_private.P_event.Guild_role_create f
+        add_untyped_handler c Discord_private.P_event.Guild_role_create f
 
     let on_guild_role_update (c : t) (f : t -> unit) : unit =
-        add_handler c Discord_private.P_event.Guild_role_update f
+        add_untyped_handler c Discord_private.P_event.Guild_role_update f
 
     let on_guild_role_delete (c : t) (f : t -> unit) : unit =
-        add_handler c Discord_private.P_event.Guild_role_delete f
+        add_untyped_handler c Discord_private.P_event.Guild_role_delete f
 
     let on_guild_scheduled_event_create (c : t) (f : t -> unit) : unit =
-        add_handler c Discord_private.P_event.Guild_scheduled_event_create f
+        add_untyped_handler c Discord_private.P_event.Guild_scheduled_event_create f
 
     let on_guild_scheduled_event_update (c : t) (f : t -> unit) : unit =
-        add_handler c Discord_private.P_event.Guild_scheduled_event_update f
+        add_untyped_handler c Discord_private.P_event.Guild_scheduled_event_update f
 
     let on_guild_scheduled_event_delete (c : t) (f : t -> unit) : unit =
-        add_handler c Discord_private.P_event.Guild_scheduled_event_delete f
+        add_untyped_handler c Discord_private.P_event.Guild_scheduled_event_delete f
 
     let on_guild_scheduled_event_user_add (c : t) (f : t -> unit) : unit =
-        add_handler c Discord_private.P_event.Guild_scheduled_event_user_add f
+        add_untyped_handler c Discord_private.P_event.Guild_scheduled_event_user_add f
 
     let on_guild_scheduled_event_user_remove (c : t) (f : t -> unit) : unit =
-        add_handler c Discord_private.P_event.Guild_scheduled_event_user_remove f
+        add_untyped_handler c Discord_private.P_event.Guild_scheduled_event_user_remove f
 
     let on_guild_soundboard_sound_create (c : t) (f : t -> unit) : unit =
-        add_handler c Discord_private.P_event.Guild_soundboard_sound_create f
+        add_untyped_handler c Discord_private.P_event.Guild_soundboard_sound_create f
 
     let on_guild_soundboard_sound_update (c : t) (f : t -> unit) : unit =
-        add_handler c Discord_private.P_event.Guild_soundboard_sound_update f
+        add_untyped_handler c Discord_private.P_event.Guild_soundboard_sound_update f
 
     let on_guild_soundboard_sound_delete (c : t) (f : t -> unit) : unit =
-        add_handler c Discord_private.P_event.Guild_soundboard_sound_delete f
+        add_untyped_handler c Discord_private.P_event.Guild_soundboard_sound_delete f
 
     let on_guild_soundboard_sounds_update (c : t) (f : t -> unit) : unit =
-        add_handler c Discord_private.P_event.Guild_soundboard_sounds_update f
+        add_untyped_handler c Discord_private.P_event.Guild_soundboard_sounds_update f
 
     let on_soundboard_sounds (c : t) (f : t -> unit) : unit =
-        add_handler c Discord_private.P_event.Soundboard_sounds f
+        add_untyped_handler c Discord_private.P_event.Soundboard_sounds f
 
     let on_integration_create (c : t) (f : t -> unit) : unit =
-        add_handler c Discord_private.P_event.Integration_create f
+        add_untyped_handler c Discord_private.P_event.Integration_create f
 
     let on_integration_update (c : t) (f : t -> unit) : unit =
-        add_handler c Discord_private.P_event.Integration_update f
+        add_untyped_handler c Discord_private.P_event.Integration_update f
 
     let on_integration_delete (c : t) (f : t -> unit) : unit =
-        add_handler c Discord_private.P_event.Integration_delete f
+        add_untyped_handler c Discord_private.P_event.Integration_delete f
 
     let on_interaction_create (c : t) (f : t -> unit) : unit =
-        add_handler c Discord_private.P_event.Interaction_create f
+        add_untyped_handler c Discord_private.P_event.Interaction_create f
 
     let on_invite_create (c : t) (f : t -> unit) : unit =
-        add_handler c Discord_private.P_event.Invite_create f
+        add_untyped_handler c Discord_private.P_event.Invite_create f
 
     let on_invite_delete (c : t) (f : t -> unit) : unit =
-        add_handler c Discord_private.P_event.Invite_delete f
+        add_untyped_handler c Discord_private.P_event.Invite_delete f
 
     let on_message (c : t) (f : t -> Message.t -> unit) : unit =
         add_message_handler c f
 
-    let on_message_update (c : t) (f : t -> unit) : unit =
-        add_handler c Discord_private.P_event.Message_update f
+    let on_message_update (c : t)
+            (f : t -> Message.t option -> Message_update.t -> unit) : unit =
+        add_typed c.message_update_handlers f
 
-    let on_message_delete (c : t) (f : t -> unit) : unit =
-        add_handler c Discord_private.P_event.Message_delete f
+    let on_message_delete (c : t)
+            (f : t -> Event_payload.Message_delete.t -> unit) : unit =
+        add_typed c.message_delete_handlers f
 
-    let on_message_delete_bulk (c : t) (f : t -> unit) : unit =
-        add_handler c Discord_private.P_event.Message_delete_bulk f
+    let on_message_delete_bulk (c : t)
+            (f : t -> Event_payload.Message_delete_bulk.t -> unit) : unit =
+        add_typed c.message_delete_bulk_handlers f
 
-    let on_message_reaction_add (c : t) (f : t -> unit) : unit =
-        add_handler c Discord_private.P_event.Message_reaction_add f
+    let on_message_reaction_add (c : t)
+            (f : t -> Event_payload.Message_reaction.t -> unit) : unit =
+        add_typed c.message_reaction_add_handlers f
 
-    let on_message_reaction_remove (c : t) (f : t -> unit) : unit =
-        add_handler c Discord_private.P_event.Message_reaction_remove f
+    let on_message_reaction_remove (c : t)
+            (f : t -> Event_payload.Message_reaction.t -> unit) : unit =
+        add_typed c.message_reaction_remove_handlers f
 
-    let on_message_reaction_remove_all (c : t) (f : t -> unit) : unit =
-        add_handler c Discord_private.P_event.Message_reaction_remove_all f
+    let on_message_reaction_remove_all (c : t)
+            (f : t -> Event_payload.Message_reaction_remove_all.t -> unit) :
+        unit =
+        add_typed c.message_reaction_remove_all_handlers f
 
-    let on_message_reaction_remove_emoji (c : t) (f : t -> unit) : unit =
-        add_handler c Discord_private.P_event.Message_reaction_remove_emoji f
+    let on_message_reaction_remove_emoji (c : t)
+            (f : t -> Event_payload.Message_reaction_remove_emoji.t -> unit) :
+        unit =
+        add_typed c.message_reaction_remove_emoji_handlers f
 
-    let on_message_poll_vote_add (c : t) (f : t -> unit) : unit =
-        add_handler c Discord_private.P_event.Message_poll_vote_add f
+    let poll_vote_payload (c : t) (json : Yojson.Safe.t) :
+        (Event_payload.Message_poll_vote.t, string) result =
+        let open Yojson.Safe.Util in
+        try
+            let user_id = json |> member "user_id" |> to_string in
+            let channel_id = json |> member "channel_id" |> to_string in
+            let message_id = json |> member "message_id" |> to_string in
+            let guild_id = json |> member "guild_id" |> to_string_option in
+            let answer_id = json |> member "answer_id" |> to_int in
+            let poll =
+                match message c ~channel_id ~message_id with
+                | Some message -> Message.poll message
+                | None -> None
+            in
+            Ok
+                ({ user_id;
+                   channel_id;
+                   message_id;
+                   guild_id;
+                   answer_id;
+                   poll } : Event_payload.Message_poll_vote.t)
+        with
+        | Type_error (msg, _) -> Error msg
+        | Undefined (msg, _) -> Error msg
 
-    let on_message_poll_vote_remove (c : t) (f : t -> unit) : unit =
-        add_handler c Discord_private.P_event.Message_poll_vote_remove f
+    let on_message_poll_vote_add (c : t)
+            (f : t -> Event_payload.Message_poll_vote.t -> unit) : unit =
+        add_handler c Discord_private.P_event.Message_poll_vote_add
+            (fun t json ->
+               match poll_vote_payload t json with
+               | Ok payload -> f t payload
+               | Error msg ->
+                   log_decode_error c "MESSAGE_POLL_VOTE_ADD" msg)
+
+    let on_message_poll_vote_remove (c : t)
+            (f : t -> Event_payload.Message_poll_vote.t -> unit) : unit =
+        add_handler c Discord_private.P_event.Message_poll_vote_remove
+            (fun t json ->
+               match poll_vote_payload t json with
+               | Ok payload -> f t payload
+               | Error msg ->
+                   log_decode_error c "MESSAGE_POLL_VOTE_REMOVE" msg)
 
     let on_presence_update (c : t) (f : t -> unit) : unit =
-        add_handler c Discord_private.P_event.Presence_update f
+        add_untyped_handler c Discord_private.P_event.Presence_update f
 
     let on_stage_instance_create (c : t) (f : t -> unit) : unit =
-        add_handler c Discord_private.P_event.Stage_instance_create f
+        add_untyped_handler c Discord_private.P_event.Stage_instance_create f
 
     let on_stage_instance_update (c : t) (f : t -> unit) : unit =
-        add_handler c Discord_private.P_event.Stage_instance_update f
+        add_untyped_handler c Discord_private.P_event.Stage_instance_update f
 
     let on_stage_instance_delete (c : t) (f : t -> unit) : unit =
-        add_handler c Discord_private.P_event.Stage_instance_delete f
+        add_untyped_handler c Discord_private.P_event.Stage_instance_delete f
 
-    let on_typing_start (c : t) (f : t -> unit) : unit =
-        add_handler c Discord_private.P_event.Typing_start f
+    let on_typing_start (c : t) (f : t -> Typing.t -> unit) : unit =
+        add_decoded_handler c Discord_private.P_event.Typing_start
+            Typing.of_yojson
+            (fun t typing ->
+               let typing =
+                   match Typing.member typing, Typing.guild_id typing with
+                   | None, Some guild_id ->
+                       (match
+                            member t ~guild_id
+                                ~user_id:(Typing.user_id typing)
+                        with
+                        | Some member -> Typing.with_member typing member
+                        | None -> typing)
+                   | _ -> typing
+               in
+               (match Typing.member typing with
+                | Some member -> put_user t (Member.user member)
+                | None -> ());
+               f t typing)
 
     let on_user_update (c : t) (f : t -> unit) : unit =
-        add_handler c Discord_private.P_event.User_update f
+        add_untyped_handler c Discord_private.P_event.User_update f
 
     let on_voice_channel_effect_send (c : t) (f : t -> unit) : unit =
-        add_handler c Discord_private.P_event.Voice_channel_effect_send f
+        add_untyped_handler c Discord_private.P_event.Voice_channel_effect_send f
 
     let on_voice_state_update (c : t) (f : t -> unit) : unit =
-        add_handler c Discord_private.P_event.Voice_state_update f
+        add_untyped_handler c Discord_private.P_event.Voice_state_update f
 
     let on_voice_server_update (c : t) (f : t -> unit) : unit =
-        add_handler c Discord_private.P_event.Voice_server_update f
+        add_untyped_handler c Discord_private.P_event.Voice_server_update f
 
     let on_webhooks_update (c : t) (f : t -> unit) : unit =
-        add_handler c Discord_private.P_event.Webhooks_update f
+        add_untyped_handler c Discord_private.P_event.Webhooks_update f
 
 
     let create (i : int) : t = {
@@ -1167,6 +1536,13 @@ include (struct
         shards_mutex = Eio.Mutex.create ();
         handlers = Atomic.make (Hashtbl.create 0);
         message_handlers = Atomic.make [];
+        message_update_handlers = Atomic.make [];
+        message_delete_handlers = Atomic.make [];
+        message_delete_bulk_handlers = Atomic.make [];
+        message_reaction_add_handlers = Atomic.make [];
+        message_reaction_remove_handlers = Atomic.make [];
+        message_reaction_remove_all_handlers = Atomic.make [];
+        message_reaction_remove_emoji_handlers = Atomic.make [];
         user = None;
         rest = None;
     }
@@ -1197,6 +1573,20 @@ include (struct
                          (Atomic.get c.message_handlers)
                  | Error msg ->
                      log_decode_error c "MESSAGE_CREATE" msg)
+            | Some Discord_private.P_event.Message_update ->
+                dispatch_message_update ~sw c json
+            | Some Discord_private.P_event.Message_delete ->
+                dispatch_message_delete ~sw c json
+            | Some Discord_private.P_event.Message_delete_bulk ->
+                dispatch_message_delete_bulk ~sw c json
+            | Some
+                  ((Discord_private.P_event.Message_reaction_add
+                   | Discord_private.P_event.Message_reaction_remove) as event) ->
+                dispatch_reaction ~sw c event json
+            | Some Discord_private.P_event.Message_reaction_remove_all ->
+                dispatch_reaction_remove_all ~sw c json
+            | Some Discord_private.P_event.Message_reaction_remove_emoji ->
+                dispatch_reaction_remove_emoji ~sw c json
             | Some event ->
                 cache_event c event json;
                 (match event with
@@ -1211,7 +1601,7 @@ include (struct
                     | None -> []
                 in
                 List.iter
-                    (fun f -> Eio.Fiber.fork ~sw (fun () -> f c))
+                    (fun f -> Eio.Fiber.fork ~sw (fun () -> f c json))
                     handlers
         in
         let rec spawn i =
