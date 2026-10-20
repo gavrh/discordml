@@ -7,6 +7,8 @@ module type Count_details = sig
     val burst : t -> int
     val normal : t -> int
 
+    val make : burst:int -> normal:int -> t
+
     val pp : Format.formatter -> t -> unit
     val equal : t -> t -> bool
     val of_yojson : Yojson.Safe.t -> (t, string) result
@@ -20,6 +22,8 @@ module Count_details : Count_details = struct
 
     let burst (c : t) : int = c.burst
     let normal (c : t) : int = c.normal
+
+    let make ~(burst : int) ~(normal : int) : t = { burst; normal }
 
     let of_yojson (json : Yojson.Safe.t) : (t, string) result =
         let open Yojson.Safe.Util in
@@ -48,6 +52,11 @@ module type Reaction = sig
     val count_details : t -> Count_details.t
     val burst_colors : t -> string list
     val me_burst : t -> bool
+
+    val make :
+        channel_id:string -> message_id:string -> emoji:Emoji.t -> count:int ->
+        me:bool -> count_details:Count_details.t -> burst_colors:string list ->
+        me_burst:bool -> t
 
     val of_yojson :
         channel_id:string ->
@@ -86,12 +95,20 @@ include (struct
     let burst_colors (r : t) : string list = r.burst_colors
     let me_burst (r : t) : bool = r.me_burst
 
-    let emoji_identifier (r : t) : string =
-        match Emoji.id r.emoji, Emoji.name r.emoji with
-        | Some id, Some name -> name ^ ":" ^ id
-        | Some id, None -> id
-        | None, Some name -> name
-        | None, None -> ""
+    let emoji_identifier (r : t) : string = Emoji.identifier r.emoji
+
+    let make ~(channel_id : string) ~(message_id : string)
+            ~(emoji : Emoji.t) ~(count : int) ~(me : bool)
+            ~(count_details : Count_details.t)
+            ~(burst_colors : string list) ~(me_burst : bool) : t =
+        { channel_id;
+          message_id;
+          emoji;
+          count;
+          me;
+          count_details;
+          burst_colors;
+          me_burst }
 
     let string_list (json : Yojson.Safe.t) : string list =
         match json with

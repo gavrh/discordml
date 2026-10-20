@@ -33,27 +33,29 @@ include (struct
     let of_yojson (json : Yojson.Safe.t) : (t, string) result =
         let open Yojson.Safe.Util in
         try
-            let member_opt =
+            let member_result =
                 match json |> member "member" with
-                | `Null -> None
+                | `Null -> Ok None
                 | m ->
                     (match Member.of_yojson m with
-                     | Ok member -> Some member
-                     | Error msg -> raise (Failure msg))
+                     | Ok member -> Ok (Some member)
+                     | Error msg -> Error msg)
             in
-            Ok
-                { id = json |> member "id" |> to_string_option;
-                  user_id = json |> member "user_id" |> to_string_option;
-                  join_timestamp =
-                    json |> member "join_timestamp" |> to_string_option
-                    |> Option.value ~default:"";
-                  flags =
-                    json |> member "flags" |> to_int_option
-                    |> Option.value ~default:0;
-                  member = member_opt }
+            match member_result with
+            | Error msg -> Error msg
+            | Ok member_opt ->
+                Ok
+                    { id = json |> member "id" |> to_string_option;
+                      user_id = json |> member "user_id" |> to_string_option;
+                      join_timestamp =
+                        json |> member "join_timestamp" |> to_string_option
+                        |> Option.value ~default:"";
+                      flags =
+                        json |> member "flags" |> to_int_option
+                        |> Option.value ~default:0;
+                      member = member_opt }
         with
         | Type_error (msg, _) -> Error msg
         | Undefined (msg, _) -> Error msg
-        | Failure msg -> Error msg
 
 end : Thread_member)

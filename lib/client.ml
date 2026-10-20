@@ -13,6 +13,17 @@ module type Client = sig
         t -> guild_id:string -> user_id:string -> Presence.t option
     val message :
         t -> channel_id:string -> message_id:string -> Message.t option
+    val user_by_id : t -> string -> User.t option
+    val role : t -> guild_id:string -> role_id:string -> Role.t option
+    val reaction : t -> message_id:string -> emoji:string -> Reaction.t option
+    val thread_member :
+        t -> thread_id:string -> user_id:string -> Thread_member.t option
+    val scheduled_event :
+        t -> guild_id:string -> event_id:string -> Guild_scheduled_event.t option
+    val stage_instance :
+        t -> guild_id:string -> channel_id:string -> Stage_instance.t option
+    val auto_moderation_rule :
+        t -> guild_id:string -> rule_id:string -> Auto_moderation.t option
     val user : t -> User.t option
     val rest : t -> Rest.t
 
@@ -121,6 +132,20 @@ include (struct
         presences_mutex : Eio.Mutex.t [@opaque];
         messages : ((string * string), Message.t) Hashtbl.t [@printer fun fmt tbl -> Format.fprintf fmt "[ ...%d ]" (Hashtbl.length tbl)];
         messages_mutex : Eio.Mutex.t [@opaque];
+        users : (string, User.t) Hashtbl.t [@printer fun fmt tbl -> Format.fprintf fmt "[ ...%d ]" (Hashtbl.length tbl)];
+        users_mutex : Eio.Mutex.t [@opaque];
+        roles : ((string * string), Role.t) Hashtbl.t [@printer fun fmt tbl -> Format.fprintf fmt "[ ...%d ]" (Hashtbl.length tbl)];
+        roles_mutex : Eio.Mutex.t [@opaque];
+        reactions : ((string * string), Reaction.t) Hashtbl.t [@printer fun fmt tbl -> Format.fprintf fmt "[ ...%d ]" (Hashtbl.length tbl)];
+        reactions_mutex : Eio.Mutex.t [@opaque];
+        thread_members : ((string * string), Thread_member.t) Hashtbl.t [@printer fun fmt tbl -> Format.fprintf fmt "[ ...%d ]" (Hashtbl.length tbl)];
+        thread_members_mutex : Eio.Mutex.t [@opaque];
+        scheduled_events : ((string * string), Guild_scheduled_event.t) Hashtbl.t [@printer fun fmt tbl -> Format.fprintf fmt "[ ...%d ]" (Hashtbl.length tbl)];
+        scheduled_events_mutex : Eio.Mutex.t [@opaque];
+        stage_instances : ((string * string), Stage_instance.t) Hashtbl.t [@printer fun fmt tbl -> Format.fprintf fmt "[ ...%d ]" (Hashtbl.length tbl)];
+        stage_instances_mutex : Eio.Mutex.t [@opaque];
+        auto_moderation_rules : ((string * string), Auto_moderation.t) Hashtbl.t [@printer fun fmt tbl -> Format.fprintf fmt "[ ...%d ]" (Hashtbl.length tbl)];
+        auto_moderation_rules_mutex : Eio.Mutex.t [@opaque];
         decode_errors : string list Atomic.t [@opaque];
         shards : (int, Discord_private.P_shard.t) Hashtbl.t [@printer fun fmt tbl -> Format.fprintf fmt "[ ...%d ]" (Hashtbl.length tbl)];
         shards_mutex : Eio.Mutex.t [@opaque];
@@ -156,6 +181,39 @@ include (struct
         Message.t option =
         Eio.Mutex.use_ro c.messages_mutex (fun () ->
             Hashtbl.find_opt c.messages (channel_id, message_id))
+
+    let user_by_id (c : t) (id : string) : User.t option =
+        Eio.Mutex.use_ro c.users_mutex (fun () ->
+            Hashtbl.find_opt c.users id)
+
+    let role (c : t) ~(guild_id : string) ~(role_id : string) : Role.t option =
+        Eio.Mutex.use_ro c.roles_mutex (fun () ->
+            Hashtbl.find_opt c.roles (guild_id, role_id))
+
+    let reaction (c : t) ~(message_id : string) ~(emoji : string) :
+        Reaction.t option =
+        Eio.Mutex.use_ro c.reactions_mutex (fun () ->
+            Hashtbl.find_opt c.reactions (message_id, emoji))
+
+    let thread_member (c : t) ~(thread_id : string) ~(user_id : string) :
+        Thread_member.t option =
+        Eio.Mutex.use_ro c.thread_members_mutex (fun () ->
+            Hashtbl.find_opt c.thread_members (thread_id, user_id))
+
+    let scheduled_event (c : t) ~(guild_id : string) ~(event_id : string) :
+        Guild_scheduled_event.t option =
+        Eio.Mutex.use_ro c.scheduled_events_mutex (fun () ->
+            Hashtbl.find_opt c.scheduled_events (guild_id, event_id))
+
+    let stage_instance (c : t) ~(guild_id : string) ~(channel_id : string) :
+        Stage_instance.t option =
+        Eio.Mutex.use_ro c.stage_instances_mutex (fun () ->
+            Hashtbl.find_opt c.stage_instances (guild_id, channel_id))
+
+    let auto_moderation_rule (c : t) ~(guild_id : string) ~(rule_id : string) :
+        Auto_moderation.t option =
+        Eio.Mutex.use_ro c.auto_moderation_rules_mutex (fun () ->
+            Hashtbl.find_opt c.auto_moderation_rules (guild_id, rule_id))
 
     let user (c : t) : User.t option = c.user
 
@@ -656,6 +714,20 @@ include (struct
         presences_mutex = Eio.Mutex.create ();
         messages = Hashtbl.create 0;
         messages_mutex = Eio.Mutex.create ();
+        users = Hashtbl.create 0;
+        users_mutex = Eio.Mutex.create ();
+        roles = Hashtbl.create 0;
+        roles_mutex = Eio.Mutex.create ();
+        reactions = Hashtbl.create 0;
+        reactions_mutex = Eio.Mutex.create ();
+        thread_members = Hashtbl.create 0;
+        thread_members_mutex = Eio.Mutex.create ();
+        scheduled_events = Hashtbl.create 0;
+        scheduled_events_mutex = Eio.Mutex.create ();
+        stage_instances = Hashtbl.create 0;
+        stage_instances_mutex = Eio.Mutex.create ();
+        auto_moderation_rules = Hashtbl.create 0;
+        auto_moderation_rules_mutex = Eio.Mutex.create ();
         decode_errors = Atomic.make [];
         shards = Hashtbl.create 0;
         shards_mutex = Eio.Mutex.create ();
