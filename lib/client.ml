@@ -319,15 +319,57 @@ include (struct
         Eio.Mutex.use_rw ~protect:true c.roles_mutex (fun () ->
             Hashtbl.replace c.roles (guild_id, Role.id r) r)
 
+    let remove_role (c : t) (guild_id : string) (role_id : string) : unit =
+        Eio.Mutex.use_rw ~protect:true c.roles_mutex (fun () ->
+            Hashtbl.remove c.roles (guild_id, role_id))
+
+    let drop_reactions (c : t) (message_ids : string list) : unit =
+        Eio.Mutex.use_rw ~protect:true c.reactions_mutex (fun () ->
+            Hashtbl.filter_map_inplace
+                (fun (message_id, _) r ->
+                   if List.mem message_id message_ids then None else Some r)
+                c.reactions)
+    let put_thread_member (c : t) (thread_id : string) (tm : Thread_member.t) :
+        unit =
+        match Thread_member.user_id tm with
+        | Some user_id ->
+            Eio.Mutex.use_rw ~protect:true c.thread_members_mutex (fun () ->
+                Hashtbl.replace c.thread_members (thread_id, user_id) tm)
+        | None -> ()
+
+    let remove_thread_member (c : t) (thread_id : string) (user_id : string) :
+        unit =
+        Eio.Mutex.use_rw ~protect:true c.thread_members_mutex (fun () ->
+            Hashtbl.remove c.thread_members (thread_id, user_id))
     let put_scheduled_event (c : t) (e : Guild_scheduled_event.t) : unit =
         Eio.Mutex.use_rw ~protect:true c.scheduled_events_mutex (fun () ->
             Hashtbl.replace c.scheduled_events
                 (Guild_scheduled_event.guild_id e, Guild_scheduled_event.id e) e)
 
+    let remove_scheduled_event (c : t) (guild_id : string) (event_id : string) :
+        unit =
+        Eio.Mutex.use_rw ~protect:true c.scheduled_events_mutex (fun () ->
+            Hashtbl.remove c.scheduled_events (guild_id, event_id))
+
     let put_stage_instance (c : t) (s : Stage_instance.t) : unit =
         Eio.Mutex.use_rw ~protect:true c.stage_instances_mutex (fun () ->
             Hashtbl.replace c.stage_instances
                 (Stage_instance.guild_id s, Stage_instance.channel_id s) s)
+
+    let remove_stage_instance (c : t) (guild_id : string)
+        (channel_id : string) : unit =
+        Eio.Mutex.use_rw ~protect:true c.stage_instances_mutex (fun () ->
+            Hashtbl.remove c.stage_instances (guild_id, channel_id))
+
+    let put_auto_moderation_rule (c : t) (r : Auto_moderation.t) : unit =
+        Eio.Mutex.use_rw ~protect:true c.auto_moderation_rules_mutex (fun () ->
+            Hashtbl.replace c.auto_moderation_rules
+                (Auto_moderation.guild_id r, Auto_moderation.id r) r)
+
+    let remove_auto_moderation_rule (c : t) (guild_id : string)
+        (rule_id : string) : unit =
+        Eio.Mutex.use_rw ~protect:true c.auto_moderation_rules_mutex (fun () ->
+            Hashtbl.remove c.auto_moderation_rules (guild_id, rule_id))
 
     let fetch_channel (c : t) (id : string) : Channel.t =
         match channel c id with
@@ -421,8 +463,17 @@ include (struct
                  drop_guild_presences c guild_id
              | None -> ())
         | Discord_private.P_event.Channel_create
-        | Discord_private.P_event.Channel_update
-        | Discord_private.P_event.Thread_create
+        | Discord_private.P_event.Channel_update ->
+            decode Channel.of_yojson (put_channel c)
+        | Discord_private.P_event.Thread_create ->
+            decode Channel.of_yojson (fun ch ->
+                put_channel c ch;
+                match json |> member "member" with
+                | `Null -> ()
+                | member_json ->
+                    (match Thread_member.of_yojson member_json with
+                     | Ok tm -> put_thread_member c (Channel.id ch) tm
+                     | Error msg -> log_decode_error c name msg))
         | Discord_private.P_event.Thread_update ->
             decode Channel.of_yojson (put_channel c)
         | Discord_private.P_event.Channel_delete
@@ -471,12 +522,91 @@ include (struct
              | Some channel_id ->
                  (match json |> member "ids" with
                   | `List ids ->
+                      let message_ids =
+                          List.filter_map
+                              (function
+                                | `String message_id -> Some message_id
+                                | _ -> None)
+                              ids
+                      in
+                      List.iter (remove_message c channel_id) message_ids;
+                      drop_reactions c message_ids
+                  | _ -> ())
+             | None -> ())
+        | Discord_private.P_event.Guild_role_create
+        | Discord_private.P_event.Guild_role_update ->
+            (match ( json |> member "guild_id" |> to_string_option,
+                     json |> member "role" ) with
+             | Some guild_id, role_json ->
+                 (match Role.of_yojson role_json with
+                  | Ok r -> put_role c guild_id r
+                  | Error msg -> log_decode_error c name msg)
+             | _ -> ())
+        | Discord_private.P_event.Guild_role_delete ->
+            (match ( json |> member "guild_id" |> to_string_option,
+                     json |> member "role_id" |> to_string_option ) with
+             | Some guild_id, Some role_id ->
+                 remove_role c guild_id role_id
+             | _ -> ())
+        | Discord_private.P_event.Guild_scheduled_event_create
+        | Discord_private.P_event.Guild_scheduled_event_update ->
+            decode Guild_scheduled_event.of_yojson (put_scheduled_event c)
+        | Discord_private.P_event.Guild_scheduled_event_delete ->
+            (match ( json |> member "guild_id" |> to_string_option,
+                     json |> member "id" |> to_string_option ) with
+             | Some guild_id, Some event_id ->
+                 remove_scheduled_event c guild_id event_id
+             | _ -> ())
+        | Discord_private.P_event.Stage_instance_create
+        | Discord_private.P_event.Stage_instance_update ->
+            decode Stage_instance.of_yojson (put_stage_instance c)
+        | Discord_private.P_event.Stage_instance_delete ->
+            (match ( json |> member "guild_id" |> to_string_option,
+                     json |> member "channel_id" |> to_string_option ) with
+             | Some guild_id, Some channel_id ->
+                 remove_stage_instance c guild_id channel_id
+             | _ -> ())
+        | Discord_private.P_event.Auto_moderation_rule_create
+        | Discord_private.P_event.Auto_moderation_rule_update ->
+            decode Auto_moderation.of_yojson (put_auto_moderation_rule c)
+        | Discord_private.P_event.Auto_moderation_rule_delete ->
+            (match ( json |> member "guild_id" |> to_string_option,
+                     json |> member "id" |> to_string_option ) with
+             | Some guild_id, Some rule_id ->
+                 remove_auto_moderation_rule c guild_id rule_id
+             | _ -> ())
+        | Discord_private.P_event.Thread_member_update ->
+            (match Thread_member.of_yojson json with
+             | Ok tm ->
+                 (match Thread_member.id tm with
+                  | Some thread_id -> put_thread_member c thread_id tm
+                  | None -> ())
+             | Error msg -> log_decode_error c name msg)
+        | Discord_private.P_event.Thread_members_update ->
+            (match json |> member "id" |> to_string_option with
+             | Some thread_id ->
+                 let cache_members field =
+                     match json |> member field with
+                     | `List members ->
+                         List.iter
+                             (fun member_json ->
+                                match Thread_member.of_yojson member_json with
+                                | Ok tm -> put_thread_member c thread_id tm
+                                | Error msg ->
+                                    log_decode_error c name msg)
+                             members
+                     | _ -> ()
+                 in
+                 cache_members "added_members";
+                 cache_members "members";
+                 (match json |> member "removed_member_ids" with
+                  | `List user_ids ->
                       List.iter
                           (function
-                            | `String message_id ->
-                                remove_message c channel_id message_id
+                            | `String user_id ->
+                                remove_thread_member c thread_id user_id
                             | _ -> ())
-                          ids
+                          user_ids
                   | _ -> ())
              | None -> ())
         | Discord_private.P_event.User_update ->
