@@ -66,9 +66,14 @@ module type Client = sig
   val on_guild_audit_log_entry_create : t -> (t -> unit) -> unit
   val on_guild_ban_add : t -> (t -> Guild_ban.t -> unit) -> unit
   val on_guild_ban_remove : t -> (t -> Guild_ban.t -> unit) -> unit
-  val on_guild_emojis_update : t -> (t -> unit) -> unit
-  val on_guild_stickers_update : t -> (t -> unit) -> unit
-  val on_guild_integrations_update : t -> (t -> unit) -> unit
+
+  val on_guild_emojis_update :
+    t -> (t -> Emoji.t list -> Emoji.t list -> unit) -> unit
+
+  val on_guild_stickers_update :
+    t -> (t -> Sticker.t list -> Sticker.t list -> unit) -> unit
+
+  val on_guild_integrations_update : t -> (t -> Guild.t option -> unit) -> unit
   val on_guild_member_add : t -> (t -> Member.t -> unit) -> unit
 
   val on_guild_member_remove :
@@ -1515,14 +1520,29 @@ include (
       add_decoded_handler c Discord_private.P_event.Guild_ban_remove
         Guild_ban.of_yojson f
 
-    let on_guild_emojis_update (c : t) (f : t -> unit) : unit =
-      add_untyped_handler c Discord_private.P_event.Guild_emojis_update f
+    let on_guild_emojis_update (c : t)
+        (f : t -> Emoji.t list -> Emoji.t list -> unit) : unit =
+      add_handler c Discord_private.P_event.Guild_emojis_update
+        (fun t snap json ->
+          let emojis =
+            decode_list c "GUILD_EMOJIS_UPDATE" Emoji.of_yojson json "emojis"
+          in
+          f t snap.emojis emojis)
 
-    let on_guild_stickers_update (c : t) (f : t -> unit) : unit =
-      add_untyped_handler c Discord_private.P_event.Guild_stickers_update f
+    let on_guild_stickers_update (c : t)
+        (f : t -> Sticker.t list -> Sticker.t list -> unit) : unit =
+      add_handler c Discord_private.P_event.Guild_stickers_update
+        (fun t snap json ->
+          let stickers =
+            decode_list c "GUILD_STICKERS_UPDATE" Sticker.of_yojson json
+              "stickers"
+          in
+          f t snap.stickers stickers)
 
-    let on_guild_integrations_update (c : t) (f : t -> unit) : unit =
-      add_untyped_handler c Discord_private.P_event.Guild_integrations_update f
+    let on_guild_integrations_update (c : t) (f : t -> Guild.t option -> unit) :
+        unit =
+      add_handler c Discord_private.P_event.Guild_integrations_update
+        (fun t snap _ -> f t snap.guild)
 
     let on_guild_member_add (c : t) (f : t -> Member.t -> unit) : unit =
       add_decoded_handler c Discord_private.P_event.Guild_member_add
