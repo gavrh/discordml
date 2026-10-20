@@ -125,6 +125,7 @@ end
 
 module Guild_members_chunk = struct
   type t = {
+    guild_id : string;
     members : Member.t list;
     guild : Guild.t option;
     count : int;
@@ -133,6 +134,7 @@ module Guild_members_chunk = struct
     not_found : string list;
   }
 
+  let guild_id (t : t) : string = t.guild_id
   let members (t : t) : Member.t list = t.members
   let guild (t : t) : Guild.t option = t.guild
   let count (t : t) : int = t.count
