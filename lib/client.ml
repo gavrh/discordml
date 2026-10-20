@@ -619,7 +619,9 @@ include (struct
         | Discord_private.P_event.Message_update ->
             decode Message.of_yojson (fun m ->
                 put_message c m;
-                refresh_message_reactions c m)
+                match json |> member "reactions" with
+                | `Null -> ()
+                | _ -> refresh_message_reactions c m)
         | Discord_private.P_event.Message_delete ->
             (match ( json |> member "channel_id" |> to_string_option,
                      json |> member "id" |> to_string_option ) with
