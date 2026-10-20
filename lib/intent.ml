@@ -1,36 +1,35 @@
 module type Intent = sig
-    type t = int
+  type t = int
 
-    val guilds : t
-    val guild_members : t
-    val guild_moderation : t
-    val guild_expressions : t
-    val guild_integrations : t
-    val guild_webhooks : t
-    val guild_invites : t
-    val guild_voice_states : t
-    val guild_presences : t
-    val guild_messages : t
-    val guild_message_reactions : t
-    val guild_message_typing : t
-    val direct_messages : t
-    val direct_message_reactions : t
-    val direct_message_typing : t
-    val message_content : t
-    val guild_scheduled_events : t
-    val auto_moderation_configuration : t
-    val auto_moderation_execution : t
-    val guild_message_polls : t
-    val direct_message_polls : t
-    val privileged : t
-    val standard : t
-    val all : t
-
-    val has : t -> t -> bool
+  val guilds : t
+  val guild_members : t
+  val guild_moderation : t
+  val guild_expressions : t
+  val guild_integrations : t
+  val guild_webhooks : t
+  val guild_invites : t
+  val guild_voice_states : t
+  val guild_presences : t
+  val guild_messages : t
+  val guild_message_reactions : t
+  val guild_message_typing : t
+  val direct_messages : t
+  val direct_message_reactions : t
+  val direct_message_typing : t
+  val message_content : t
+  val guild_scheduled_events : t
+  val auto_moderation_configuration : t
+  val auto_moderation_execution : t
+  val guild_message_polls : t
+  val direct_message_polls : t
+  val privileged : t
+  val standard : t
+  val all : t
+  val has : t -> t -> bool
 end
 
-include (struct
-
+include (
+  struct
     type t = int
 
     let guilds = 1 lsl 0
@@ -54,31 +53,18 @@ include (struct
     let auto_moderation_execution = 1 lsl 21
     let guild_message_polls = 1 lsl 24
     let direct_message_polls = 1 lsl 25
-
     let privileged = guild_members lor guild_presences lor message_content
 
     let standard =
-        guilds lor
-        guild_moderation lor
-        guild_expressions lor
-        guild_integrations lor
-        guild_webhooks lor
-        guild_invites lor
-        guild_voice_states lor
-        guild_messages lor
-        guild_message_reactions lor
-        guild_message_typing lor
-        direct_messages lor
-        direct_message_reactions lor
-        direct_message_typing lor
-        guild_scheduled_events lor
-        auto_moderation_configuration lor
-        auto_moderation_execution lor
-        guild_message_polls lor
-        direct_message_polls
+      guilds lor guild_moderation lor guild_expressions lor guild_integrations
+      lor guild_webhooks lor guild_invites lor guild_voice_states
+      lor guild_messages lor guild_message_reactions lor guild_message_typing
+      lor direct_messages lor direct_message_reactions lor direct_message_typing
+      lor guild_scheduled_events lor auto_moderation_configuration
+      lor auto_moderation_execution lor guild_message_polls
+      lor direct_message_polls
 
     let all = standard lor privileged
-
     let has (intents : t) (flag : t) : bool = intents land flag = flag
-
-end : Intent)
+  end :
+    Intent)
