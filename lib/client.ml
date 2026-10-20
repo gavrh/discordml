@@ -323,12 +323,27 @@ include (struct
         Eio.Mutex.use_rw ~protect:true c.roles_mutex (fun () ->
             Hashtbl.remove c.roles (guild_id, role_id))
 
+    let put_reaction (c : t) (r : Reaction.t) : unit =
+        Eio.Mutex.use_rw ~protect:true c.reactions_mutex (fun () ->
+            Hashtbl.replace c.reactions
+                (Reaction.message_id r, Reaction.emoji_identifier r) r)
+
+    let remove_reaction (c : t) ~(message_id : string) ~(emoji : string) :
+        unit =
+        Eio.Mutex.use_rw ~protect:true c.reactions_mutex (fun () ->
+            Hashtbl.remove c.reactions (message_id, emoji))
+
     let drop_reactions (c : t) (message_ids : string list) : unit =
         Eio.Mutex.use_rw ~protect:true c.reactions_mutex (fun () ->
             Hashtbl.filter_map_inplace
                 (fun (message_id, _) r ->
                    if List.mem message_id message_ids then None else Some r)
                 c.reactions)
+
+    let refresh_message_reactions (c : t) (m : Message.t) : unit =
+        drop_reactions c [Message.id m];
+        List.iter (put_reaction c) (Message.reactions m)
+
     let put_thread_member (c : t) (thread_id : string) (tm : Thread_member.t) :
         unit =
         match Thread_member.user_id tm with
@@ -427,6 +442,14 @@ include (struct
             | Ok v -> on_ok v
             | Error msg -> log_decode_error c name msg
         in
+        let string_list (json : Yojson.Safe.t) : string list =
+            match json with
+            | `List l ->
+                List.filter_map
+                    (function `String s -> Some s | _ -> None)
+                    l
+            | _ -> []
+        in
         match event with
         | Discord_private.P_event.Ready ->
             (match User.of_yojson (json |> member "user") with
@@ -510,12 +533,15 @@ include (struct
                  put_user c (Presence.user p)
              | Error msg -> log_decode_error c name msg)
         | Discord_private.P_event.Message_update ->
-            decode Message.of_yojson (put_message c)
+            decode Message.of_yojson (fun m ->
+                put_message c m;
+                refresh_message_reactions c m)
         | Discord_private.P_event.Message_delete ->
             (match ( json |> member "channel_id" |> to_string_option,
                      json |> member "id" |> to_string_option ) with
              | Some channel_id, Some message_id ->
-                 remove_message c channel_id message_id
+                 remove_message c channel_id message_id;
+                 drop_reactions c [message_id]
              | _ -> ())
         | Discord_private.P_event.Message_delete_bulk ->
             (match json |> member "channel_id" |> to_string_option with
@@ -611,6 +637,139 @@ include (struct
              | None -> ())
         | Discord_private.P_event.User_update ->
             decode User.of_yojson (put_user c)
+        | Discord_private.P_event.Message_reaction_add ->
+            (match Emoji.of_yojson (json |> member "emoji") with
+             | Error msg -> log_decode_error c name msg
+             | Ok emoji ->
+                 (match ( json |> member "channel_id" |> to_string_option,
+                          json |> member "message_id" |> to_string_option,
+                          json |> member "user_id" |> to_string_option ) with
+                  | Some channel_id, Some message_id, Some user_id ->
+                      let burst =
+                          json |> member "burst" |> to_bool_option
+                          |> Option.value ~default:false
+                      in
+                      let burst_colors =
+                          string_list (json |> member "burst_colors")
+                      in
+                      let is_me =
+                          match c.user with
+                          | Some u -> User.id u = user_id
+                          | None -> false
+                      in
+                      Eio.Mutex.use_rw ~protect:true c.reactions_mutex
+                          (fun () ->
+                             let key = (message_id, Emoji.identifier emoji) in
+                             match Hashtbl.find_opt c.reactions key with
+                             | Some r ->
+                                 let details = Reaction.count_details r in
+                                 let old_burst =
+                                     Reaction.Count_details.burst details
+                                 in
+                                 let old_normal =
+                                     Reaction.Count_details.normal details
+                                 in
+                                 let count_details =
+                                     if burst then
+                                         Reaction.Count_details.make
+                                             ~burst:(old_burst + 1)
+                                             ~normal:old_normal
+                                     else
+                                         Reaction.Count_details.make
+                                             ~burst:old_burst
+                                             ~normal:(old_normal + 1)
+                                 in
+                                 Hashtbl.replace c.reactions key
+                                     (Reaction.make ~channel_id ~message_id
+                                        ~emoji
+                                        ~count:(Reaction.count r + 1)
+                                        ~me:(Reaction.me r || is_me)
+                                        ~count_details
+                                        ~burst_colors:
+                                            (Reaction.burst_colors r)
+                                        ~me_burst:
+                                            (Reaction.me_burst r
+                                             || (is_me && burst)))
+                             | None ->
+                                 let count_details =
+                                     Reaction.Count_details.make
+                                         ~burst:(if burst then 1 else 0)
+                                         ~normal:(if burst then 0 else 1)
+                                 in
+                                 Hashtbl.replace c.reactions key
+                                     (Reaction.make ~channel_id ~message_id
+                                        ~emoji ~count:1 ~me:is_me
+                                        ~count_details ~burst_colors
+                                        ~me_burst:(is_me && burst)))
+                  | _ -> ()))
+        | Discord_private.P_event.Message_reaction_remove ->
+            (match Emoji.of_yojson (json |> member "emoji") with
+             | Error msg -> log_decode_error c name msg
+             | Ok emoji ->
+                 (match json |> member "message_id" |> to_string_option with
+                  | Some message_id ->
+                      let burst =
+                          json |> member "burst" |> to_bool_option
+                          |> Option.value ~default:false
+                      in
+                      Eio.Mutex.use_rw ~protect:true c.reactions_mutex
+                          (fun () ->
+                             let key = (message_id, Emoji.identifier emoji) in
+                             match Hashtbl.find_opt c.reactions key with
+                             | None -> ()
+                             | Some r ->
+                                 let count = Reaction.count r in
+                                 if count <= 1 then
+                                     Hashtbl.remove c.reactions key
+                                 else begin
+                                     let details =
+                                         Reaction.count_details r
+                                     in
+                                     let old_burst =
+                                         Reaction.Count_details.burst details
+                                     in
+                                     let old_normal =
+                                         Reaction.Count_details.normal details
+                                     in
+                                     let count_details =
+                                         if burst then
+                                             Reaction.Count_details.make
+                                                 ~burst:
+                                                     (max 0 (old_burst - 1))
+                                                 ~normal:old_normal
+                                         else
+                                             Reaction.Count_details.make
+                                                 ~burst:old_burst
+                                                 ~normal:
+                                                     (max 0 (old_normal - 1))
+                                     in
+                                     Hashtbl.replace c.reactions key
+                                         (Reaction.make
+                                            ~channel_id:
+                                                (Reaction.channel_id r)
+                                            ~message_id
+                                            ~emoji:(Reaction.emoji r)
+                                            ~count:(count - 1)
+                                            ~me:(Reaction.me r)
+                                            ~count_details
+                                            ~burst_colors:
+                                                (Reaction.burst_colors r)
+                                            ~me_burst:(Reaction.me_burst r))
+                                 end)
+                  | None -> ()))
+        | Discord_private.P_event.Message_reaction_remove_all ->
+            (match json |> member "message_id" |> to_string_option with
+             | Some message_id -> drop_reactions c [message_id]
+             | None -> ())
+        | Discord_private.P_event.Message_reaction_remove_emoji ->
+            (match Emoji.of_yojson (json |> member "emoji") with
+             | Error msg -> log_decode_error c name msg
+             | Ok emoji ->
+                 (match json |> member "message_id" |> to_string_option with
+                  | Some message_id ->
+                      remove_reaction c ~message_id
+                          ~emoji:(Emoji.identifier emoji)
+                  | None -> ()))
         | _ -> ()
 
     let add_handler (c : t) (event : Discord_private.P_event.t) (f : t -> unit) : unit =
@@ -924,6 +1083,7 @@ include (struct
                      put_message c message;
                      put_user c (Message.author message);
                      List.iter (put_user c) (Message.mentions message);
+                     refresh_message_reactions c message;
                      List.iter
                          (fun f -> Eio.Fiber.fork ~sw (fun () -> f c message))
                          (Atomic.get c.message_handlers)
