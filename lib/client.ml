@@ -311,6 +311,24 @@ include (struct
         Eio.Mutex.use_rw ~protect:true c.messages_mutex (fun () ->
             Hashtbl.remove c.messages (channel_id, message_id))
 
+    let put_user (c : t) (u : User.t) : unit =
+        Eio.Mutex.use_rw ~protect:true c.users_mutex (fun () ->
+            Hashtbl.replace c.users (User.id u) u)
+
+    let put_role (c : t) (guild_id : string) (r : Role.t) : unit =
+        Eio.Mutex.use_rw ~protect:true c.roles_mutex (fun () ->
+            Hashtbl.replace c.roles (guild_id, Role.id r) r)
+
+    let put_scheduled_event (c : t) (e : Guild_scheduled_event.t) : unit =
+        Eio.Mutex.use_rw ~protect:true c.scheduled_events_mutex (fun () ->
+            Hashtbl.replace c.scheduled_events
+                (Guild_scheduled_event.guild_id e, Guild_scheduled_event.id e) e)
+
+    let put_stage_instance (c : t) (s : Stage_instance.t) : unit =
+        Eio.Mutex.use_rw ~protect:true c.stage_instances_mutex (fun () ->
+            Hashtbl.replace c.stage_instances
+                (Stage_instance.guild_id s, Stage_instance.channel_id s) s)
+
     let fetch_channel (c : t) (id : string) : Channel.t =
         match channel c id with
         | Some ch -> ch
@@ -368,16 +386,31 @@ include (struct
             | Error msg -> log_decode_error c name msg
         in
         match event with
+        | Discord_private.P_event.Ready ->
+            (match User.of_yojson (json |> member "user") with
+             | Ok u -> put_user c u
+             | Error msg -> log_decode_error c name msg)
         | Discord_private.P_event.Guild_create
         | Discord_private.P_event.Guild_update ->
             decode Guild.of_yojson (fun g ->
+                let guild_id = Guild.id g in
                 Eio.Mutex.use_rw ~protect:true c.guilds_mutex (fun () ->
-                    Hashtbl.replace c.guilds (Guild.id g) g);
-                put_guild_channels c name (Guild.id g) json;
+                    Hashtbl.replace c.guilds guild_id g);
+                put_guild_channels c name guild_id json;
+                List.iter (put_channel c) (Guild.threads g);
+                List.iter (put_role c guild_id) (Guild.roles g);
+                List.iter (put_scheduled_event c) (Guild.scheduled_events g);
+                List.iter (put_stage_instance c) (Guild.stage_instances g);
                 List.iter
                     (fun m ->
-                       put_member c (Guild.id g) (User.id (Member.user m)) m)
-                    (Guild.members g))
+                       put_member c guild_id (User.id (Member.user m)) m;
+                       put_user c (Member.user m))
+                    (Guild.members g);
+                List.iter
+                    (fun p ->
+                       put_presence c guild_id (User.id (Presence.user p)) p;
+                       put_user c (Presence.user p))
+                    (Guild.presences g))
         | Discord_private.P_event.Guild_delete ->
             (match json |> member "id" |> to_string_option with
              | Some guild_id ->
@@ -403,7 +436,8 @@ include (struct
              | Ok m ->
                  (match json |> member "guild_id" |> to_string_option with
                   | Some guild_id ->
-                      put_member c guild_id (User.id (Member.user m)) m
+                      put_member c guild_id (User.id (Member.user m)) m;
+                      put_user c (Member.user m)
                   | None -> ())
              | Error msg -> log_decode_error c name msg)
         | Discord_private.P_event.Guild_member_remove ->
@@ -421,7 +455,8 @@ include (struct
                  (match Presence.guild_id p with
                   | Some guild_id ->
                       put_presence c guild_id (User.id (Presence.user p)) p
-                  | None -> ())
+                  | None -> ());
+                 put_user c (Presence.user p)
              | Error msg -> log_decode_error c name msg)
         | Discord_private.P_event.Message_update ->
             decode Message.of_yojson (put_message c)
@@ -444,6 +479,8 @@ include (struct
                           ids
                   | _ -> ())
              | None -> ())
+        | Discord_private.P_event.User_update ->
+            decode User.of_yojson (put_user c)
         | _ -> ()
 
     let add_handler (c : t) (event : Discord_private.P_event.t) (f : t -> unit) : unit =
@@ -755,6 +792,8 @@ include (struct
                 (match Message.of_yojson json with
                  | Ok message ->
                      put_message c message;
+                     put_user c (Message.author message);
+                     List.iter (put_user c) (Message.mentions message);
                      List.iter
                          (fun f -> Eio.Fiber.fork ~sw (fun () -> f c message))
                          (Atomic.get c.message_handlers)
