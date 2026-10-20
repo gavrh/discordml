@@ -13,6 +13,17 @@ module type Client = sig
         t -> guild_id:string -> user_id:string -> Presence.t option
     val message :
         t -> channel_id:string -> message_id:string -> Message.t option
+    val user_by_id : t -> string -> User.t option
+    val role : t -> guild_id:string -> role_id:string -> Role.t option
+    val reaction : t -> message_id:string -> emoji:string -> Reaction.t option
+    val thread_member :
+        t -> thread_id:string -> user_id:string -> Thread_member.t option
+    val scheduled_event :
+        t -> guild_id:string -> event_id:string -> Guild_scheduled_event.t option
+    val stage_instance :
+        t -> guild_id:string -> channel_id:string -> Stage_instance.t option
+    val auto_moderation_rule :
+        t -> guild_id:string -> rule_id:string -> Auto_moderation.t option
     val user : t -> User.t option
     val rest : t -> Rest.t
 
@@ -121,6 +132,20 @@ include (struct
         presences_mutex : Eio.Mutex.t [@opaque];
         messages : ((string * string), Message.t) Hashtbl.t [@printer fun fmt tbl -> Format.fprintf fmt "[ ...%d ]" (Hashtbl.length tbl)];
         messages_mutex : Eio.Mutex.t [@opaque];
+        users : (string, User.t) Hashtbl.t [@printer fun fmt tbl -> Format.fprintf fmt "[ ...%d ]" (Hashtbl.length tbl)];
+        users_mutex : Eio.Mutex.t [@opaque];
+        roles : ((string * string), Role.t) Hashtbl.t [@printer fun fmt tbl -> Format.fprintf fmt "[ ...%d ]" (Hashtbl.length tbl)];
+        roles_mutex : Eio.Mutex.t [@opaque];
+        reactions : ((string * string), Reaction.t) Hashtbl.t [@printer fun fmt tbl -> Format.fprintf fmt "[ ...%d ]" (Hashtbl.length tbl)];
+        reactions_mutex : Eio.Mutex.t [@opaque];
+        thread_members : ((string * string), Thread_member.t) Hashtbl.t [@printer fun fmt tbl -> Format.fprintf fmt "[ ...%d ]" (Hashtbl.length tbl)];
+        thread_members_mutex : Eio.Mutex.t [@opaque];
+        scheduled_events : ((string * string), Guild_scheduled_event.t) Hashtbl.t [@printer fun fmt tbl -> Format.fprintf fmt "[ ...%d ]" (Hashtbl.length tbl)];
+        scheduled_events_mutex : Eio.Mutex.t [@opaque];
+        stage_instances : ((string * string), Stage_instance.t) Hashtbl.t [@printer fun fmt tbl -> Format.fprintf fmt "[ ...%d ]" (Hashtbl.length tbl)];
+        stage_instances_mutex : Eio.Mutex.t [@opaque];
+        auto_moderation_rules : ((string * string), Auto_moderation.t) Hashtbl.t [@printer fun fmt tbl -> Format.fprintf fmt "[ ...%d ]" (Hashtbl.length tbl)];
+        auto_moderation_rules_mutex : Eio.Mutex.t [@opaque];
         decode_errors : string list Atomic.t [@opaque];
         shards : (int, Discord_private.P_shard.t) Hashtbl.t [@printer fun fmt tbl -> Format.fprintf fmt "[ ...%d ]" (Hashtbl.length tbl)];
         shards_mutex : Eio.Mutex.t [@opaque];
@@ -156,6 +181,39 @@ include (struct
         Message.t option =
         Eio.Mutex.use_ro c.messages_mutex (fun () ->
             Hashtbl.find_opt c.messages (channel_id, message_id))
+
+    let user_by_id (c : t) (id : string) : User.t option =
+        Eio.Mutex.use_ro c.users_mutex (fun () ->
+            Hashtbl.find_opt c.users id)
+
+    let role (c : t) ~(guild_id : string) ~(role_id : string) : Role.t option =
+        Eio.Mutex.use_ro c.roles_mutex (fun () ->
+            Hashtbl.find_opt c.roles (guild_id, role_id))
+
+    let reaction (c : t) ~(message_id : string) ~(emoji : string) :
+        Reaction.t option =
+        Eio.Mutex.use_ro c.reactions_mutex (fun () ->
+            Hashtbl.find_opt c.reactions (message_id, emoji))
+
+    let thread_member (c : t) ~(thread_id : string) ~(user_id : string) :
+        Thread_member.t option =
+        Eio.Mutex.use_ro c.thread_members_mutex (fun () ->
+            Hashtbl.find_opt c.thread_members (thread_id, user_id))
+
+    let scheduled_event (c : t) ~(guild_id : string) ~(event_id : string) :
+        Guild_scheduled_event.t option =
+        Eio.Mutex.use_ro c.scheduled_events_mutex (fun () ->
+            Hashtbl.find_opt c.scheduled_events (guild_id, event_id))
+
+    let stage_instance (c : t) ~(guild_id : string) ~(channel_id : string) :
+        Stage_instance.t option =
+        Eio.Mutex.use_ro c.stage_instances_mutex (fun () ->
+            Hashtbl.find_opt c.stage_instances (guild_id, channel_id))
+
+    let auto_moderation_rule (c : t) ~(guild_id : string) ~(rule_id : string) :
+        Auto_moderation.t option =
+        Eio.Mutex.use_ro c.auto_moderation_rules_mutex (fun () ->
+            Hashtbl.find_opt c.auto_moderation_rules (guild_id, rule_id))
 
     let user (c : t) : User.t option = c.user
 
@@ -253,6 +311,82 @@ include (struct
         Eio.Mutex.use_rw ~protect:true c.messages_mutex (fun () ->
             Hashtbl.remove c.messages (channel_id, message_id))
 
+    let put_user (c : t) (u : User.t) : unit =
+        Eio.Mutex.use_rw ~protect:true c.users_mutex (fun () ->
+            Hashtbl.replace c.users (User.id u) u)
+
+    let put_role (c : t) (guild_id : string) (r : Role.t) : unit =
+        Eio.Mutex.use_rw ~protect:true c.roles_mutex (fun () ->
+            Hashtbl.replace c.roles (guild_id, Role.id r) r)
+
+    let remove_role (c : t) (guild_id : string) (role_id : string) : unit =
+        Eio.Mutex.use_rw ~protect:true c.roles_mutex (fun () ->
+            Hashtbl.remove c.roles (guild_id, role_id))
+
+    let put_reaction (c : t) (r : Reaction.t) : unit =
+        Eio.Mutex.use_rw ~protect:true c.reactions_mutex (fun () ->
+            Hashtbl.replace c.reactions
+                (Reaction.message_id r, Reaction.emoji_identifier r) r)
+
+    let remove_reaction (c : t) ~(message_id : string) ~(emoji : string) :
+        unit =
+        Eio.Mutex.use_rw ~protect:true c.reactions_mutex (fun () ->
+            Hashtbl.remove c.reactions (message_id, emoji))
+
+    let drop_reactions (c : t) (message_ids : string list) : unit =
+        Eio.Mutex.use_rw ~protect:true c.reactions_mutex (fun () ->
+            Hashtbl.filter_map_inplace
+                (fun (message_id, _) r ->
+                   if List.mem message_id message_ids then None else Some r)
+                c.reactions)
+
+    let refresh_message_reactions (c : t) (m : Message.t) : unit =
+        drop_reactions c [Message.id m];
+        List.iter (put_reaction c) (Message.reactions m)
+
+    let put_thread_member (c : t) (thread_id : string) (tm : Thread_member.t) :
+        unit =
+        match Thread_member.user_id tm with
+        | Some user_id ->
+            Eio.Mutex.use_rw ~protect:true c.thread_members_mutex (fun () ->
+                Hashtbl.replace c.thread_members (thread_id, user_id) tm)
+        | None -> ()
+
+    let remove_thread_member (c : t) (thread_id : string) (user_id : string) :
+        unit =
+        Eio.Mutex.use_rw ~protect:true c.thread_members_mutex (fun () ->
+            Hashtbl.remove c.thread_members (thread_id, user_id))
+
+    let put_scheduled_event (c : t) (e : Guild_scheduled_event.t) : unit =
+        Eio.Mutex.use_rw ~protect:true c.scheduled_events_mutex (fun () ->
+            Hashtbl.replace c.scheduled_events
+                (Guild_scheduled_event.guild_id e, Guild_scheduled_event.id e) e)
+
+    let remove_scheduled_event (c : t) (guild_id : string) (event_id : string) :
+        unit =
+        Eio.Mutex.use_rw ~protect:true c.scheduled_events_mutex (fun () ->
+            Hashtbl.remove c.scheduled_events (guild_id, event_id))
+
+    let put_stage_instance (c : t) (s : Stage_instance.t) : unit =
+        Eio.Mutex.use_rw ~protect:true c.stage_instances_mutex (fun () ->
+            Hashtbl.replace c.stage_instances
+                (Stage_instance.guild_id s, Stage_instance.channel_id s) s)
+
+    let remove_stage_instance (c : t) (guild_id : string)
+        (channel_id : string) : unit =
+        Eio.Mutex.use_rw ~protect:true c.stage_instances_mutex (fun () ->
+            Hashtbl.remove c.stage_instances (guild_id, channel_id))
+
+    let put_auto_moderation_rule (c : t) (r : Auto_moderation.t) : unit =
+        Eio.Mutex.use_rw ~protect:true c.auto_moderation_rules_mutex (fun () ->
+            Hashtbl.replace c.auto_moderation_rules
+                (Auto_moderation.guild_id r, Auto_moderation.id r) r)
+
+    let remove_auto_moderation_rule (c : t) (guild_id : string)
+        (rule_id : string) : unit =
+        Eio.Mutex.use_rw ~protect:true c.auto_moderation_rules_mutex (fun () ->
+            Hashtbl.remove c.auto_moderation_rules (guild_id, rule_id))
+
     let fetch_channel (c : t) (id : string) : Channel.t =
         match channel c id with
         | Some ch -> ch
@@ -279,6 +413,15 @@ include (struct
             put_member c guild_id (User.id (Member.user m)) m;
             m
 
+    let channel_ids_for_guild (c : t) (guild_id : string) : string list =
+        Eio.Mutex.use_ro c.channels_mutex (fun () ->
+            Hashtbl.fold
+                (fun channel_id ch acc ->
+                   match Channel.guild_id ch with
+                   | Some g when g = guild_id -> channel_id :: acc
+                   | _ -> acc)
+                c.channels [])
+
     let drop_guild_channels (c : t) (guild_id : string) : unit =
         Eio.Mutex.use_rw ~protect:true c.channels_mutex (fun () ->
             Hashtbl.filter_map_inplace
@@ -300,6 +443,68 @@ include (struct
                 (fun (g, _) p -> if g = guild_id then None else Some p)
                 c.presences)
 
+    let drop_guild_roles (c : t) (guild_id : string) : unit =
+        Eio.Mutex.use_rw ~protect:true c.roles_mutex (fun () ->
+            Hashtbl.filter_map_inplace
+                (fun (g, _) r -> if g = guild_id then None else Some r)
+                c.roles)
+
+    let drop_guild_scheduled_events (c : t) (guild_id : string) : unit =
+        Eio.Mutex.use_rw ~protect:true c.scheduled_events_mutex (fun () ->
+            Hashtbl.filter_map_inplace
+                (fun (g, _) e -> if g = guild_id then None else Some e)
+                c.scheduled_events)
+
+    let drop_guild_stage_instances (c : t) (guild_id : string) : unit =
+        Eio.Mutex.use_rw ~protect:true c.stage_instances_mutex (fun () ->
+            Hashtbl.filter_map_inplace
+                (fun (g, _) s -> if g = guild_id then None else Some s)
+                c.stage_instances)
+
+    let drop_guild_auto_moderation_rules (c : t) (guild_id : string) : unit =
+        Eio.Mutex.use_rw ~protect:true c.auto_moderation_rules_mutex
+            (fun () ->
+               Hashtbl.filter_map_inplace
+                   (fun (g, _) r -> if g = guild_id then None else Some r)
+                   c.auto_moderation_rules)
+
+    let drop_guild_thread_members (c : t) (thread_ids : string list) : unit =
+        Eio.Mutex.use_rw ~protect:true c.thread_members_mutex (fun () ->
+            Hashtbl.filter_map_inplace
+                (fun (thread_id, _) tm ->
+                   if List.mem thread_id thread_ids then None else Some tm)
+                c.thread_members)
+
+    let drop_channel_messages (c : t) (channel_id : string) : string list =
+        Eio.Mutex.use_rw ~protect:true c.messages_mutex (fun () ->
+            let message_ids =
+                Hashtbl.fold
+                    (fun (cid, message_id) _ acc ->
+                       if cid = channel_id then message_id :: acc else acc)
+                    c.messages []
+            in
+            List.iter
+                (fun message_id ->
+                   Hashtbl.remove c.messages (channel_id, message_id))
+                message_ids;
+            message_ids)
+
+    let drop_guild_messages (c : t) (channel_ids : string list) : string list =
+        Eio.Mutex.use_rw ~protect:true c.messages_mutex (fun () ->
+            let message_ids =
+                Hashtbl.fold
+                    (fun (channel_id, message_id) _ acc ->
+                       if List.mem channel_id channel_ids then
+                           message_id :: acc
+                       else acc)
+                    c.messages []
+            in
+            Hashtbl.filter_map_inplace
+                (fun (channel_id, _) m ->
+                   if List.mem channel_id channel_ids then None else Some m)
+                c.messages;
+            message_ids)
+
     let cache_event (c : t) (event : Discord_private.P_event.t)
         (json : Yojson.Safe.t) : unit =
         let open Yojson.Safe.Util in
@@ -309,35 +514,79 @@ include (struct
             | Ok v -> on_ok v
             | Error msg -> log_decode_error c name msg
         in
+        let string_list (json : Yojson.Safe.t) : string list =
+            match json with
+            | `List l ->
+                List.filter_map
+                    (function `String s -> Some s | _ -> None)
+                    l
+            | _ -> []
+        in
         match event with
+        | Discord_private.P_event.Ready ->
+            (match User.of_yojson (json |> member "user") with
+             | Ok u -> put_user c u
+             | Error msg -> log_decode_error c name msg)
         | Discord_private.P_event.Guild_create
         | Discord_private.P_event.Guild_update ->
             decode Guild.of_yojson (fun g ->
+                let guild_id = Guild.id g in
                 Eio.Mutex.use_rw ~protect:true c.guilds_mutex (fun () ->
-                    Hashtbl.replace c.guilds (Guild.id g) g);
-                put_guild_channels c name (Guild.id g) json;
+                    Hashtbl.replace c.guilds guild_id g);
+                put_guild_channels c name guild_id json;
+                List.iter (put_channel c) (Guild.threads g);
+                List.iter (put_role c guild_id) (Guild.roles g);
+                List.iter (put_scheduled_event c) (Guild.scheduled_events g);
+                List.iter (put_stage_instance c) (Guild.stage_instances g);
                 List.iter
                     (fun m ->
-                       put_member c (Guild.id g) (User.id (Member.user m)) m)
-                    (Guild.members g))
+                       put_member c guild_id (User.id (Member.user m)) m;
+                       put_user c (Member.user m))
+                    (Guild.members g);
+                List.iter
+                    (fun p ->
+                       put_presence c guild_id (User.id (Presence.user p)) p;
+                       put_user c (Presence.user p))
+                    (Guild.presences g))
         | Discord_private.P_event.Guild_delete ->
             (match json |> member "id" |> to_string_option with
              | Some guild_id ->
+                 let channel_ids = channel_ids_for_guild c guild_id in
                  Eio.Mutex.use_rw ~protect:true c.guilds_mutex (fun () ->
                      Hashtbl.remove c.guilds guild_id);
                  drop_guild_channels c guild_id;
                  drop_guild_members c guild_id;
-                 drop_guild_presences c guild_id
+                 drop_guild_presences c guild_id;
+                 drop_guild_roles c guild_id;
+                 drop_guild_scheduled_events c guild_id;
+                 drop_guild_stage_instances c guild_id;
+                 drop_guild_auto_moderation_rules c guild_id;
+                 drop_guild_thread_members c channel_ids;
+                 let message_ids = drop_guild_messages c channel_ids in
+                 drop_reactions c message_ids
              | None -> ())
         | Discord_private.P_event.Channel_create
-        | Discord_private.P_event.Channel_update
-        | Discord_private.P_event.Thread_create
+        | Discord_private.P_event.Channel_update ->
+            decode Channel.of_yojson (put_channel c)
+        | Discord_private.P_event.Thread_create ->
+            decode Channel.of_yojson (fun ch ->
+                put_channel c ch;
+                match json |> member "member" with
+                | `Null -> ()
+                | member_json ->
+                    (match Thread_member.of_yojson member_json with
+                     | Ok tm -> put_thread_member c (Channel.id ch) tm
+                     | Error msg -> log_decode_error c name msg))
         | Discord_private.P_event.Thread_update ->
             decode Channel.of_yojson (put_channel c)
         | Discord_private.P_event.Channel_delete
         | Discord_private.P_event.Thread_delete ->
             (match json |> member "id" |> to_string_option with
-             | Some cid -> remove_channel c cid
+             | Some cid ->
+                 remove_channel c cid;
+                 drop_guild_thread_members c [cid];
+                 let message_ids = drop_channel_messages c cid in
+                 drop_reactions c message_ids
              | None -> ())
         | Discord_private.P_event.Guild_member_add
         | Discord_private.P_event.Guild_member_update ->
@@ -345,7 +594,8 @@ include (struct
              | Ok m ->
                  (match json |> member "guild_id" |> to_string_option with
                   | Some guild_id ->
-                      put_member c guild_id (User.id (Member.user m)) m
+                      put_member c guild_id (User.id (Member.user m)) m;
+                      put_user c (Member.user m)
                   | None -> ())
              | Error msg -> log_decode_error c name msg)
         | Discord_private.P_event.Guild_member_remove ->
@@ -363,29 +613,271 @@ include (struct
                  (match Presence.guild_id p with
                   | Some guild_id ->
                       put_presence c guild_id (User.id (Presence.user p)) p
-                  | None -> ())
+                  | None -> ());
+                 put_user c (Presence.user p)
              | Error msg -> log_decode_error c name msg)
         | Discord_private.P_event.Message_update ->
-            decode Message.of_yojson (put_message c)
+            decode Message.of_yojson (fun m ->
+                put_message c m;
+                match json |> member "reactions" with
+                | `Null -> ()
+                | _ -> refresh_message_reactions c m)
         | Discord_private.P_event.Message_delete ->
             (match ( json |> member "channel_id" |> to_string_option,
                      json |> member "id" |> to_string_option ) with
              | Some channel_id, Some message_id ->
-                 remove_message c channel_id message_id
+                 remove_message c channel_id message_id;
+                 drop_reactions c [message_id]
              | _ -> ())
         | Discord_private.P_event.Message_delete_bulk ->
             (match json |> member "channel_id" |> to_string_option with
              | Some channel_id ->
                  (match json |> member "ids" with
                   | `List ids ->
-                      List.iter
-                          (function
-                            | `String message_id ->
-                                remove_message c channel_id message_id
-                            | _ -> ())
-                          ids
+                      let message_ids =
+                          List.filter_map
+                              (function
+                                | `String message_id -> Some message_id
+                                | _ -> None)
+                              ids
+                      in
+                      List.iter (remove_message c channel_id) message_ids;
+                      drop_reactions c message_ids
                   | _ -> ())
              | None -> ())
+        | Discord_private.P_event.Guild_role_create
+        | Discord_private.P_event.Guild_role_update ->
+            (match ( json |> member "guild_id" |> to_string_option,
+                     json |> member "role" ) with
+             | Some guild_id, role_json ->
+                 (match Role.of_yojson role_json with
+                  | Ok r -> put_role c guild_id r
+                  | Error msg -> log_decode_error c name msg)
+             | _ -> ())
+        | Discord_private.P_event.Guild_role_delete ->
+            (match ( json |> member "guild_id" |> to_string_option,
+                     json |> member "role_id" |> to_string_option ) with
+             | Some guild_id, Some role_id ->
+                 remove_role c guild_id role_id
+             | _ -> ())
+        | Discord_private.P_event.Guild_scheduled_event_create
+        | Discord_private.P_event.Guild_scheduled_event_update ->
+            decode Guild_scheduled_event.of_yojson (put_scheduled_event c)
+        | Discord_private.P_event.Guild_scheduled_event_delete ->
+            (match ( json |> member "guild_id" |> to_string_option,
+                     json |> member "id" |> to_string_option ) with
+             | Some guild_id, Some event_id ->
+                 remove_scheduled_event c guild_id event_id
+             | _ -> ())
+        | Discord_private.P_event.Stage_instance_create
+        | Discord_private.P_event.Stage_instance_update ->
+            decode Stage_instance.of_yojson (put_stage_instance c)
+        | Discord_private.P_event.Stage_instance_delete ->
+            (match ( json |> member "guild_id" |> to_string_option,
+                     json |> member "channel_id" |> to_string_option ) with
+             | Some guild_id, Some channel_id ->
+                 remove_stage_instance c guild_id channel_id
+             | _ -> ())
+        | Discord_private.P_event.Auto_moderation_rule_create
+        | Discord_private.P_event.Auto_moderation_rule_update ->
+            decode Auto_moderation.of_yojson (put_auto_moderation_rule c)
+        | Discord_private.P_event.Auto_moderation_rule_delete ->
+            (match ( json |> member "guild_id" |> to_string_option,
+                     json |> member "id" |> to_string_option ) with
+             | Some guild_id, Some rule_id ->
+                 remove_auto_moderation_rule c guild_id rule_id
+             | _ -> ())
+        | Discord_private.P_event.Thread_member_update ->
+            (match Thread_member.of_yojson json with
+             | Ok tm ->
+                 (match Thread_member.id tm with
+                  | Some thread_id -> put_thread_member c thread_id tm
+                  | None -> ())
+             | Error msg -> log_decode_error c name msg)
+        | Discord_private.P_event.Thread_members_update ->
+            (match json |> member "id" |> to_string_option with
+             | Some thread_id ->
+                 let cache_members field =
+                     match json |> member field with
+                     | `List members ->
+                         List.iter
+                             (fun member_json ->
+                                match Thread_member.of_yojson member_json with
+                                | Ok tm -> put_thread_member c thread_id tm
+                                | Error msg ->
+                                    log_decode_error c name msg)
+                             members
+                     | _ -> ()
+                 in
+                 cache_members "added_members";
+                 cache_members "members";
+                 (match json |> member "removed_member_ids" with
+                  | `List user_ids ->
+                      List.iter
+                          (function
+                            | `String user_id ->
+                                remove_thread_member c thread_id user_id
+                            | _ -> ())
+                          user_ids
+                  | _ -> ())
+             | None -> ())
+        | Discord_private.P_event.User_update ->
+            decode User.of_yojson (put_user c)
+        | Discord_private.P_event.Message_reaction_add ->
+            (match Emoji.of_yojson (json |> member "emoji") with
+             | Error msg -> log_decode_error c name msg
+             | Ok emoji ->
+                 (match ( json |> member "channel_id" |> to_string_option,
+                          json |> member "message_id" |> to_string_option,
+                          json |> member "user_id" |> to_string_option ) with
+                  | Some channel_id, Some message_id, Some user_id ->
+                      let burst =
+                          json |> member "burst" |> to_bool_option
+                          |> Option.value ~default:false
+                      in
+                      let burst_colors =
+                          string_list (json |> member "burst_colors")
+                      in
+                      let is_me =
+                          match c.user with
+                          | Some u -> User.id u = user_id
+                          | None -> false
+                      in
+                      Eio.Mutex.use_rw ~protect:true c.reactions_mutex
+                          (fun () ->
+                             let key = (message_id, Emoji.identifier emoji) in
+                             match Hashtbl.find_opt c.reactions key with
+                             | Some r ->
+                                 let details = Reaction.count_details r in
+                                 let old_burst =
+                                     Reaction.Count_details.burst details
+                                 in
+                                 let old_normal =
+                                     Reaction.Count_details.normal details
+                                 in
+                                 let count_details =
+                                     if burst then
+                                         Reaction.Count_details.make
+                                             ~burst:(old_burst + 1)
+                                             ~normal:old_normal
+                                     else
+                                         Reaction.Count_details.make
+                                             ~burst:old_burst
+                                             ~normal:(old_normal + 1)
+                                 in
+                                 let burst_colors =
+                                     if burst then
+                                         List.fold_left
+                                             (fun colors color ->
+                                                if List.mem color colors then
+                                                    colors
+                                                else colors @ [ color ])
+                                             (Reaction.burst_colors r)
+                                             burst_colors
+                                     else Reaction.burst_colors r
+                                 in
+                                 Hashtbl.replace c.reactions key
+                                     (Reaction.make ~channel_id ~message_id
+                                        ~emoji
+                                        ~count:(Reaction.count r + 1)
+                                        ~me:(Reaction.me r || is_me)
+                                        ~count_details ~burst_colors
+                                        ~me_burst:
+                                            (Reaction.me_burst r
+                                             || (is_me && burst)))
+                             | None ->
+                                 let count_details =
+                                     Reaction.Count_details.make
+                                         ~burst:(if burst then 1 else 0)
+                                         ~normal:(if burst then 0 else 1)
+                                 in
+                                 Hashtbl.replace c.reactions key
+                                     (Reaction.make ~channel_id ~message_id
+                                        ~emoji ~count:1 ~me:is_me
+                                        ~count_details ~burst_colors
+                                        ~me_burst:(is_me && burst)))
+                  | _ -> ()))
+        | Discord_private.P_event.Message_reaction_remove ->
+            (match Emoji.of_yojson (json |> member "emoji") with
+             | Error msg -> log_decode_error c name msg
+             | Ok emoji ->
+                 (match json |> member "message_id" |> to_string_option with
+                  | Some message_id ->
+                      let burst =
+                          json |> member "burst" |> to_bool_option
+                          |> Option.value ~default:false
+                      in
+                      let user_id =
+                          json |> member "user_id" |> to_string_option
+                      in
+                      let is_me =
+                          match c.user, user_id with
+                          | Some u, Some id -> User.id u = id
+                          | _ -> false
+                      in
+                      Eio.Mutex.use_rw ~protect:true c.reactions_mutex
+                          (fun () ->
+                             let key = (message_id, Emoji.identifier emoji) in
+                             match Hashtbl.find_opt c.reactions key with
+                             | None -> ()
+                             | Some r ->
+                                 let count = Reaction.count r in
+                                 if count <= 1 then
+                                     Hashtbl.remove c.reactions key
+                                 else begin
+                                     let details =
+                                         Reaction.count_details r
+                                     in
+                                     let old_burst =
+                                         Reaction.Count_details.burst details
+                                     in
+                                     let old_normal =
+                                         Reaction.Count_details.normal details
+                                     in
+                                     let count_details =
+                                         if burst then
+                                             Reaction.Count_details.make
+                                                 ~burst:
+                                                     (max 0 (old_burst - 1))
+                                                 ~normal:old_normal
+                                         else
+                                             Reaction.Count_details.make
+                                                 ~burst:old_burst
+                                                 ~normal:
+                                                     (max 0 (old_normal - 1))
+                                     in
+                                     Hashtbl.replace c.reactions key
+                                         (Reaction.make
+                                            ~channel_id:
+                                                (Reaction.channel_id r)
+                                            ~message_id
+                                            ~emoji:(Reaction.emoji r)
+                                            ~count:(count - 1)
+                                            ~me:
+                                                (if is_me && not burst then
+                                                     false
+                                                 else Reaction.me r)
+                                            ~count_details
+                                            ~burst_colors:
+                                                (Reaction.burst_colors r)
+                                            ~me_burst:
+                                                (if is_me && burst then false
+                                                 else Reaction.me_burst r))
+                                 end)
+                  | None -> ()))
+        | Discord_private.P_event.Message_reaction_remove_all ->
+            (match json |> member "message_id" |> to_string_option with
+             | Some message_id -> drop_reactions c [message_id]
+             | None -> ())
+        | Discord_private.P_event.Message_reaction_remove_emoji ->
+            (match Emoji.of_yojson (json |> member "emoji") with
+             | Error msg -> log_decode_error c name msg
+             | Ok emoji ->
+                 (match json |> member "message_id" |> to_string_option with
+                  | Some message_id ->
+                      remove_reaction c ~message_id
+                          ~emoji:(Emoji.identifier emoji)
+                  | None -> ()))
         | _ -> ()
 
     let add_handler (c : t) (event : Discord_private.P_event.t) (f : t -> unit) : unit =
@@ -656,6 +1148,20 @@ include (struct
         presences_mutex = Eio.Mutex.create ();
         messages = Hashtbl.create 0;
         messages_mutex = Eio.Mutex.create ();
+        users = Hashtbl.create 0;
+        users_mutex = Eio.Mutex.create ();
+        roles = Hashtbl.create 0;
+        roles_mutex = Eio.Mutex.create ();
+        reactions = Hashtbl.create 0;
+        reactions_mutex = Eio.Mutex.create ();
+        thread_members = Hashtbl.create 0;
+        thread_members_mutex = Eio.Mutex.create ();
+        scheduled_events = Hashtbl.create 0;
+        scheduled_events_mutex = Eio.Mutex.create ();
+        stage_instances = Hashtbl.create 0;
+        stage_instances_mutex = Eio.Mutex.create ();
+        auto_moderation_rules = Hashtbl.create 0;
+        auto_moderation_rules_mutex = Eio.Mutex.create ();
         decode_errors = Atomic.make [];
         shards = Hashtbl.create 0;
         shards_mutex = Eio.Mutex.create ();
@@ -683,6 +1189,9 @@ include (struct
                 (match Message.of_yojson json with
                  | Ok message ->
                      put_message c message;
+                     put_user c (Message.author message);
+                     List.iter (put_user c) (Message.mentions message);
+                     refresh_message_reactions c message;
                      List.iter
                          (fun f -> Eio.Fiber.fork ~sw (fun () -> f c message))
                          (Atomic.get c.message_handlers)

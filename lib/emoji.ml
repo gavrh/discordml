@@ -3,6 +3,7 @@ module type Emoji = sig
 
     val id : t -> string option
     val name : t -> string option
+    val identifier : t -> string
     val roles : t -> string list
     val require_colons : t -> bool
     val managed : t -> bool
@@ -30,6 +31,14 @@ include (struct
 
     let id (e : t) : string option = e.id
     let name (e : t) : string option = e.name
+
+    let identifier (e : t) : string =
+        match e.id, e.name with
+        | Some id, Some name -> name ^ ":" ^ id
+        | Some id, None -> id
+        | None, Some name -> name
+        | None, None -> ""
+
     let roles (e : t) : string list = e.roles
     let require_colons (e : t) : bool = e.require_colons
     let managed (e : t) : bool = e.managed
