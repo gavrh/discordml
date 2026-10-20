@@ -28,7 +28,6 @@
     yojson
     ppx_deriving
     ppx_deriving_yojson
-    dotenv
     domain-name
     digestif
     mirage-crypto-rng)
