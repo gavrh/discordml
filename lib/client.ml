@@ -649,9 +649,15 @@ include (
       | Discord_private.P_event.Guild_create
         when json |> member "unavailable" |> to_bool_option = Some true ->
           ()
-      | Discord_private.P_event.Guild_create
-      | Discord_private.P_event.Guild_update ->
+      | Discord_private.P_event.Guild_create ->
           decode Guild.of_yojson cache_guild
+      | Discord_private.P_event.Guild_update -> (
+          match json |> member "id" |> to_string_option with
+          | Some guild_id -> (
+              match guild c guild_id with
+              | Some old -> decode (Guild.merge old) cache_guild
+              | None -> decode Guild.of_yojson cache_guild)
+          | None -> ())
       | Discord_private.P_event.Guild_delete -> (
           match json |> member "id" |> to_string_option with
           | Some guild_id ->
