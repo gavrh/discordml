@@ -49,6 +49,7 @@ module type Guild = sig
   val welcome_screen : t -> Welcome_screen.t option
   val create : string -> t
   val of_yojson : Yojson.Safe.t -> (t, string) result
+  val merge : t -> Yojson.Safe.t -> (t, string) result
   val fetch : Rest.t -> string -> t
   val pp : Format.formatter -> t -> unit
   val show : t -> string
@@ -298,6 +299,142 @@ include (
                   match Welcome_screen.of_yojson w with
                   | Ok ws -> Some ws
                   | Error msg -> raise (Failure msg)));
+          }
+      with
+      | Type_error (msg, _) -> Error msg
+      | Undefined (msg, _) -> Error msg
+      | Failure msg -> Error msg
+
+    let merge (old : t) (json : Yojson.Safe.t) : (t, string) result =
+      let open Yojson.Safe.Util in
+      try
+        let present name =
+          match json with
+          | `Assoc fields -> List.mem_assoc name fields
+          | _ -> false
+        in
+        let string_field name fallback =
+          if present name then json |> member name |> to_string else fallback
+        in
+        let string_option_field name fallback =
+          if present name then json |> member name |> to_string_option
+          else fallback
+        in
+        let int_field name fallback =
+          if present name then
+            json |> member name |> to_int_option
+            |> Option.value ~default:fallback
+          else fallback
+        in
+        let int_option_field name fallback =
+          if present name then json |> member name |> to_int_option
+          else fallback
+        in
+        let bool_field name fallback =
+          if present name then
+            json |> member name |> to_bool_option
+            |> Option.value ~default:fallback
+          else fallback
+        in
+        let list_field name f fallback =
+          if present name then parse_list json name f else fallback
+        in
+        let string_list_field name fallback =
+          if present name then
+            match json |> member name with
+            | `List l ->
+                List.filter_map (function `String s -> Some s | _ -> None) l
+            | _ -> []
+          else fallback
+        in
+        let welcome_screen_field fallback =
+          if present "welcome_screen" then
+            match json |> member "welcome_screen" with
+            | `Null -> None
+            | w -> (
+                match Welcome_screen.of_yojson w with
+                | Ok ws -> Some ws
+                | Error msg -> raise (Failure msg))
+          else fallback
+        in
+        Ok
+          {
+            id = string_field "id" old.id;
+            name = string_field "name" old.name;
+            icon = string_option_field "icon" old.icon;
+            owner_id = string_option_field "owner_id" old.owner_id;
+            unavailable = bool_field "unavailable" old.unavailable;
+            member_count = int_option_field "member_count" old.member_count;
+            channels = list_field "channels" Channel.of_yojson old.channels;
+            roles = list_field "roles" Role.of_yojson old.roles;
+            emojis = list_field "emojis" Emoji.of_yojson old.emojis;
+            stickers = list_field "stickers" Sticker.of_yojson old.stickers;
+            members = list_field "members" Member.of_yojson old.members;
+            description = string_option_field "description" old.description;
+            splash = string_option_field "splash" old.splash;
+            discovery_splash =
+              string_option_field "discovery_splash" old.discovery_splash;
+            features = string_list_field "features" old.features;
+            banner = string_option_field "banner" old.banner;
+            region = string_option_field "region" old.region;
+            afk_channel_id =
+              string_option_field "afk_channel_id" old.afk_channel_id;
+            afk_timeout = int_field "afk_timeout" old.afk_timeout;
+            system_channel_id =
+              string_option_field "system_channel_id" old.system_channel_id;
+            system_channel_flags =
+              int_field "system_channel_flags" old.system_channel_flags;
+            rules_channel_id =
+              string_option_field "rules_channel_id" old.rules_channel_id;
+            public_updates_channel_id =
+              string_option_field "public_updates_channel_id"
+                old.public_updates_channel_id;
+            preferred_locale =
+              string_option_field "preferred_locale" old.preferred_locale;
+            verification_level =
+              int_field "verification_level" old.verification_level;
+            default_message_notifications =
+              int_field "default_message_notifications"
+                old.default_message_notifications;
+            explicit_content_filter =
+              int_field "explicit_content_filter" old.explicit_content_filter;
+            mfa_level = int_field "mfa_level" old.mfa_level;
+            premium_tier = int_field "premium_tier" old.premium_tier;
+            premium_subscription_count =
+              int_option_field "premium_subscription_count"
+                old.premium_subscription_count;
+            nsfw_level = int_field "nsfw_level" old.nsfw_level;
+            vanity_url_code =
+              string_option_field "vanity_url_code" old.vanity_url_code;
+            widget_enabled = bool_field "widget_enabled" old.widget_enabled;
+            widget_channel_id =
+              string_option_field "widget_channel_id" old.widget_channel_id;
+            max_members = int_option_field "max_members" old.max_members;
+            max_presences = int_option_field "max_presences" old.max_presences;
+            max_video_channel_users =
+              int_option_field "max_video_channel_users"
+                old.max_video_channel_users;
+            approximate_member_count =
+              int_option_field "approximate_member_count"
+                old.approximate_member_count;
+            approximate_presence_count =
+              int_option_field "approximate_presence_count"
+                old.approximate_presence_count;
+            premium_progress_bar_enabled =
+              bool_field "premium_progress_bar_enabled"
+                old.premium_progress_bar_enabled;
+            safety_alerts_channel_id =
+              string_option_field "safety_alerts_channel_id"
+                old.safety_alerts_channel_id;
+            threads = list_field "threads" Channel.of_yojson old.threads;
+            presences = list_field "presences" Presence.of_yojson old.presences;
+            scheduled_events =
+              list_field "guild_scheduled_events"
+                Guild_scheduled_event.of_yojson old.scheduled_events;
+            stage_instances =
+              list_field "stage_instances" Stage_instance.of_yojson
+                old.stage_instances;
+            welcome_screen = welcome_screen_field old.welcome_screen;
           }
       with
       | Type_error (msg, _) -> Error msg

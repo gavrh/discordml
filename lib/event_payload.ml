@@ -98,3 +98,49 @@ module Message_poll_vote = struct
   let answer_id (t : t) : int = t.answer_id
   let poll (t : t) : Poll.t option = t.poll
 end
+
+module Guild_delete = struct
+  type t = { id : string; unavailable : bool; guild : Guild.t option }
+
+  let id (t : t) : string = t.id
+  let unavailable (t : t) : bool = t.unavailable
+  let guild (t : t) : Guild.t option = t.guild
+end
+
+module Role_delete = struct
+  type t = { guild_id : string; role_id : string; role : Role.t option }
+
+  let guild_id (t : t) : string = t.guild_id
+  let role_id (t : t) : string = t.role_id
+  let role (t : t) : Role.t option = t.role
+end
+
+module Member_remove = struct
+  type t = { guild_id : string; user : User.t; member : Member.t option }
+
+  let guild_id (t : t) : string = t.guild_id
+  let user (t : t) : User.t = t.user
+  let member (t : t) : Member.t option = t.member
+end
+
+module Guild_members_chunk = struct
+  type t = {
+    guild_id : string;
+    members : Member.t list;
+    presences : Presence.t list;
+    guild : Guild.t option;
+    count : int;
+    index : int;
+    nonce : string option;
+    not_found : string list;
+  }
+
+  let guild_id (t : t) : string = t.guild_id
+  let members (t : t) : Member.t list = t.members
+  let presences (t : t) : Presence.t list = t.presences
+  let guild (t : t) : Guild.t option = t.guild
+  let count (t : t) : int = t.count
+  let index (t : t) : int = t.index
+  let nonce (t : t) : string option = t.nonce
+  let not_found (t : t) : string list = t.not_found
+end

@@ -60,22 +60,41 @@ module type Client = sig
   val on_subscription_create : t -> (t -> unit) -> unit
   val on_subscription_update : t -> (t -> unit) -> unit
   val on_subscription_delete : t -> (t -> unit) -> unit
-  val on_guild_create : t -> (t -> unit) -> unit
-  val on_guild_update : t -> (t -> unit) -> unit
-  val on_guild_delete : t -> (t -> unit) -> unit
+  val on_guild_create : t -> (t -> Guild.t -> unit) -> unit
+  val on_guild_update : t -> (t -> Guild.t option -> Guild.t -> unit) -> unit
+  val on_guild_delete : t -> (t -> Event_payload.Guild_delete.t -> unit) -> unit
   val on_guild_audit_log_entry_create : t -> (t -> unit) -> unit
-  val on_guild_ban_add : t -> (t -> unit) -> unit
-  val on_guild_ban_remove : t -> (t -> unit) -> unit
-  val on_guild_emojis_update : t -> (t -> unit) -> unit
-  val on_guild_stickers_update : t -> (t -> unit) -> unit
-  val on_guild_integrations_update : t -> (t -> unit) -> unit
-  val on_guild_member_add : t -> (t -> unit) -> unit
-  val on_guild_member_remove : t -> (t -> unit) -> unit
-  val on_guild_member_update : t -> (t -> unit) -> unit
-  val on_guild_members_chunk : t -> (t -> unit) -> unit
-  val on_guild_role_create : t -> (t -> unit) -> unit
-  val on_guild_role_update : t -> (t -> unit) -> unit
-  val on_guild_role_delete : t -> (t -> unit) -> unit
+  val on_guild_ban_add : t -> (t -> string -> Guild_ban.t -> unit) -> unit
+  val on_guild_ban_remove : t -> (t -> string -> Guild_ban.t -> unit) -> unit
+
+  val on_guild_emojis_update :
+    t -> (t -> string -> Emoji.t list -> Emoji.t list -> unit) -> unit
+
+  val on_guild_stickers_update :
+    t -> (t -> string -> Sticker.t list -> Sticker.t list -> unit) -> unit
+
+  val on_guild_integrations_update :
+    t -> (t -> string -> Guild.t option -> unit) -> unit
+
+  val on_guild_member_add : t -> (t -> string -> Member.t -> unit) -> unit
+
+  val on_guild_member_remove :
+    t -> (t -> Event_payload.Member_remove.t -> unit) -> unit
+
+  val on_guild_member_update :
+    t -> (t -> string -> Member.t option -> Member.t -> unit) -> unit
+
+  val on_guild_members_chunk :
+    t -> (t -> Event_payload.Guild_members_chunk.t -> unit) -> unit
+
+  val on_guild_role_create : t -> (t -> string -> Role.t -> unit) -> unit
+
+  val on_guild_role_update :
+    t -> (t -> string -> Role.t option -> Role.t -> unit) -> unit
+
+  val on_guild_role_delete :
+    t -> (t -> Event_payload.Role_delete.t -> unit) -> unit
+
   val on_guild_scheduled_event_create : t -> (t -> unit) -> unit
   val on_guild_scheduled_event_update : t -> (t -> unit) -> unit
   val on_guild_scheduled_event_delete : t -> (t -> unit) -> unit
@@ -136,6 +155,18 @@ end
 
 include (
   struct
+    type snapshot = {
+      guild : Guild.t option;
+      channel : Channel.t option;
+      member : Member.t option;
+      presence : Presence.t option;
+      role : Role.t option;
+      user : User.t option;
+      thread_member : Thread_member.t option;
+      emojis : Emoji.t list;
+      stickers : Sticker.t list;
+    }
+
     type t = {
       mutable token : string option;
       intents : int;
@@ -193,7 +224,9 @@ include (
             fun fmt tbl -> Format.fprintf fmt "[ ...%d ]" (Hashtbl.length tbl)]
       shards_mutex : Eio.Mutex.t; [@opaque]
       handlers :
-        (Discord_private.P_event.t, (t -> Yojson.Safe.t -> unit) list) Hashtbl.t
+        ( Discord_private.P_event.t,
+          (t -> snapshot -> Yojson.Safe.t -> unit) list )
+        Hashtbl.t
         Atomic.t;
           [@opaque]
       message_handlers : (t -> Message.t -> unit) list Atomic.t; [@opaque]
@@ -588,48 +621,65 @@ include (
         | Ok v -> on_ok v
         | Error msg -> log_decode_error c name msg
       in
+      let cache_guild (g : Guild.t) : unit =
+        let guild_id = Guild.id g in
+        Eio.Mutex.use_rw ~protect:true c.guilds_mutex (fun () ->
+            Hashtbl.replace c.guilds guild_id g);
+        put_guild_channels c name guild_id json;
+        List.iter (put_channel c) (Guild.threads g);
+        List.iter (put_role c guild_id) (Guild.roles g);
+        List.iter (put_scheduled_event c) (Guild.scheduled_events g);
+        List.iter (put_stage_instance c) (Guild.stage_instances g);
+        List.iter
+          (fun m ->
+            put_member c guild_id (User.id (Member.user m)) m;
+            put_user c (Member.user m))
+          (Guild.members g);
+        List.iter
+          (fun p ->
+            put_presence c guild_id (User.id (Presence.user p)) p;
+            put_user c (Presence.user p))
+          (Guild.presences g)
+      in
       match event with
       | Discord_private.P_event.Ready -> (
           match User.of_yojson (json |> member "user") with
           | Ok u -> put_user c u
           | Error msg -> log_decode_error c name msg)
       | Discord_private.P_event.Guild_create
-      | Discord_private.P_event.Guild_update ->
-          decode Guild.of_yojson (fun g ->
-              let guild_id = Guild.id g in
-              Eio.Mutex.use_rw ~protect:true c.guilds_mutex (fun () ->
-                  Hashtbl.replace c.guilds guild_id g);
-              put_guild_channels c name guild_id json;
-              List.iter (put_channel c) (Guild.threads g);
-              List.iter (put_role c guild_id) (Guild.roles g);
-              List.iter (put_scheduled_event c) (Guild.scheduled_events g);
-              List.iter (put_stage_instance c) (Guild.stage_instances g);
-              List.iter
-                (fun m ->
-                  put_member c guild_id (User.id (Member.user m)) m;
-                  put_user c (Member.user m))
-                (Guild.members g);
-              List.iter
-                (fun p ->
-                  put_presence c guild_id (User.id (Presence.user p)) p;
-                  put_user c (Presence.user p))
-                (Guild.presences g))
+        when json |> member "unavailable" |> to_bool_option = Some true ->
+          ()
+      | Discord_private.P_event.Guild_create ->
+          decode Guild.of_yojson cache_guild
+      | Discord_private.P_event.Guild_update -> (
+          match json |> member "id" |> to_string_option with
+          | Some guild_id -> (
+              match guild c guild_id with
+              | Some old -> decode (Guild.merge old) cache_guild
+              | None -> decode Guild.of_yojson cache_guild)
+          | None -> ())
       | Discord_private.P_event.Guild_delete -> (
           match json |> member "id" |> to_string_option with
           | Some guild_id ->
-              let channel_ids = channel_ids_for_guild c guild_id in
-              Eio.Mutex.use_rw ~protect:true c.guilds_mutex (fun () ->
-                  Hashtbl.remove c.guilds guild_id);
-              drop_guild_channels c guild_id;
-              drop_guild_members c guild_id;
-              drop_guild_presences c guild_id;
-              drop_guild_roles c guild_id;
-              drop_guild_scheduled_events c guild_id;
-              drop_guild_stage_instances c guild_id;
-              drop_guild_auto_moderation_rules c guild_id;
-              drop_guild_thread_members c channel_ids;
-              let message_ids = drop_guild_messages c channel_ids in
-              drop_reactions c message_ids
+              let unavailable =
+                json |> member "unavailable" |> to_bool_option
+                |> Option.value ~default:false
+              in
+              if not unavailable then begin
+                let channel_ids = channel_ids_for_guild c guild_id in
+                Eio.Mutex.use_rw ~protect:true c.guilds_mutex (fun () ->
+                    Hashtbl.remove c.guilds guild_id);
+                drop_guild_channels c guild_id;
+                drop_guild_members c guild_id;
+                drop_guild_presences c guild_id;
+                drop_guild_roles c guild_id;
+                drop_guild_scheduled_events c guild_id;
+                drop_guild_stage_instances c guild_id;
+                drop_guild_auto_moderation_rules c guild_id;
+                drop_guild_thread_members c channel_ids;
+                let message_ids = drop_guild_messages c channel_ids in
+                drop_reactions c message_ids
+              end
           | None -> ())
       | Discord_private.P_event.Channel_create
       | Discord_private.P_event.Channel_update ->
@@ -944,6 +994,77 @@ include (
               | None -> ()))
       | _ -> ()
 
+    let snapshot_event (c : t) (event : Discord_private.P_event.t)
+        (json : Yojson.Safe.t) : snapshot =
+      let find_member = member in
+      let open Yojson.Safe.Util in
+      let empty =
+        {
+          guild = None;
+          channel = None;
+          member = None;
+          presence = None;
+          role = None;
+          user = None;
+          thread_member = None;
+          emojis = [];
+          stickers = [];
+        }
+      in
+      let with_guild guild_id =
+        match guild_id with
+        | Some guild_id -> { empty with guild = guild c guild_id }
+        | None -> empty
+      in
+      match event with
+      | Discord_private.P_event.Guild_update
+      | Discord_private.P_event.Guild_delete ->
+          with_guild (json |> member "id" |> to_string_option)
+      | Discord_private.P_event.Guild_integrations_update
+      | Discord_private.P_event.Guild_members_chunk ->
+          with_guild (json |> member "guild_id" |> to_string_option)
+      | Discord_private.P_event.Guild_role_update -> (
+          match
+            ( json |> member "guild_id" |> to_string_option,
+              json |> member "role" |> member "id" |> to_string_option )
+          with
+          | Some guild_id, Some role_id ->
+              { empty with role = role c ~guild_id ~role_id }
+          | _ -> empty)
+      | Discord_private.P_event.Guild_role_delete -> (
+          match
+            ( json |> member "guild_id" |> to_string_option,
+              json |> member "role_id" |> to_string_option )
+          with
+          | Some guild_id, Some role_id ->
+              { empty with role = role c ~guild_id ~role_id }
+          | _ -> empty)
+      | Discord_private.P_event.Guild_member_update
+      | Discord_private.P_event.Guild_member_remove -> (
+          match
+            ( json |> member "guild_id" |> to_string_option,
+              json |> member "user" |> member "id" |> to_string_option )
+          with
+          | Some guild_id, Some user_id ->
+              { empty with member = find_member c ~guild_id ~user_id }
+          | _ -> empty)
+      | Discord_private.P_event.Guild_emojis_update -> (
+          match json |> member "guild_id" |> to_string_option with
+          | Some guild_id -> (
+              match guild c guild_id with
+              | Some g -> { empty with guild = Some g; emojis = Guild.emojis g }
+              | None -> empty)
+          | None -> empty)
+      | Discord_private.P_event.Guild_stickers_update -> (
+          match json |> member "guild_id" |> to_string_option with
+          | Some guild_id -> (
+              match guild c guild_id with
+              | Some g ->
+                  { empty with guild = Some g; stickers = Guild.stickers g }
+              | None -> empty)
+          | None -> empty)
+      | _ -> empty
+
     type reaction_event = {
       channel_id : string;
       message_id : string;
@@ -1231,7 +1352,7 @@ include (
           | _ -> ())
 
     let add_handler (c : t) (event : Discord_private.P_event.t)
-        (f : t -> Yojson.Safe.t -> unit) : unit =
+        (f : t -> snapshot -> Yojson.Safe.t -> unit) : unit =
       let rec add () =
         let old = Atomic.get c.handlers in
         let tbl = Hashtbl.copy old in
@@ -1245,16 +1366,32 @@ include (
 
     let add_untyped_handler (c : t) (event : Discord_private.P_event.t)
         (f : t -> unit) : unit =
-      add_handler c event (fun t _ -> f t)
+      add_handler c event (fun t _ _ -> f t)
 
     let add_decoded_handler (c : t) (event : Discord_private.P_event.t)
         (of_yojson : Yojson.Safe.t -> ('a, string) result) (f : t -> 'a -> unit)
         : unit =
-      add_handler c event (fun t json ->
+      add_handler c event (fun t _ json ->
           match of_yojson json with
           | Ok payload -> f t payload
           | Error msg ->
               log_decode_error c (Discord_private.P_event.to_string event) msg)
+
+    let decode_list (c : t) (name : string)
+        (of_yojson : Yojson.Safe.t -> ('a, string) result)
+        (json : Yojson.Safe.t) (field : string) : 'a list =
+      let open Yojson.Safe.Util in
+      match json |> member field with
+      | `List items ->
+          List.filter_map
+            (fun item ->
+              match of_yojson item with
+              | Ok value -> Some value
+              | Error msg ->
+                  log_decode_error c name msg;
+                  None)
+            items
+      | _ -> []
 
     let add_message_handler (c : t) (f : t -> Message.t -> unit) : unit =
       let rec add () =
@@ -1357,54 +1494,211 @@ include (
     let on_subscription_delete (c : t) (f : t -> unit) : unit =
       add_untyped_handler c Discord_private.P_event.Subscription_delete f
 
-    let on_guild_create (c : t) (f : t -> unit) : unit =
-      add_untyped_handler c Discord_private.P_event.Guild_create f
+    let on_guild_create (c : t) (f : t -> Guild.t -> unit) : unit =
+      add_decoded_handler c Discord_private.P_event.Guild_create Guild.of_yojson
+        f
 
-    let on_guild_update (c : t) (f : t -> unit) : unit =
-      add_untyped_handler c Discord_private.P_event.Guild_update f
+    let on_guild_update (c : t) (f : t -> Guild.t option -> Guild.t -> unit) :
+        unit =
+      add_handler c Discord_private.P_event.Guild_update (fun t snap json ->
+          match Guild.of_yojson json with
+          | Ok guild -> f t snap.guild guild
+          | Error msg -> log_decode_error c "GUILD_UPDATE" msg)
 
-    let on_guild_delete (c : t) (f : t -> unit) : unit =
-      add_untyped_handler c Discord_private.P_event.Guild_delete f
+    let on_guild_delete (c : t) (f : t -> Event_payload.Guild_delete.t -> unit)
+        : unit =
+      add_handler c Discord_private.P_event.Guild_delete (fun t snap json ->
+          let open Yojson.Safe.Util in
+          match json |> member "id" |> to_string_option with
+          | Some id ->
+              let unavailable =
+                json |> member "unavailable" |> to_bool_option
+                |> Option.value ~default:false
+              in
+              f t { id; unavailable; guild = snap.guild }
+          | None -> ())
 
     let on_guild_audit_log_entry_create (c : t) (f : t -> unit) : unit =
       add_untyped_handler c Discord_private.P_event.Guild_audit_log_entry_create
         f
 
-    let on_guild_ban_add (c : t) (f : t -> unit) : unit =
-      add_untyped_handler c Discord_private.P_event.Guild_ban_add f
+    let on_guild_ban_add (c : t) (f : t -> string -> Guild_ban.t -> unit) : unit
+        =
+      add_handler c Discord_private.P_event.Guild_ban_add (fun t _ json ->
+          let open Yojson.Safe.Util in
+          match
+            ( json |> member "guild_id" |> to_string_option,
+              Guild_ban.of_yojson json )
+          with
+          | Some guild_id, Ok ban -> f t guild_id ban
+          | Some _, Error msg -> log_decode_error c "GUILD_BAN_ADD" msg
+          | None, _ -> ())
 
-    let on_guild_ban_remove (c : t) (f : t -> unit) : unit =
-      add_untyped_handler c Discord_private.P_event.Guild_ban_remove f
+    let on_guild_ban_remove (c : t) (f : t -> string -> Guild_ban.t -> unit) :
+        unit =
+      add_handler c Discord_private.P_event.Guild_ban_remove (fun t _ json ->
+          let open Yojson.Safe.Util in
+          match
+            ( json |> member "guild_id" |> to_string_option,
+              Guild_ban.of_yojson json )
+          with
+          | Some guild_id, Ok ban -> f t guild_id ban
+          | Some _, Error msg -> log_decode_error c "GUILD_BAN_REMOVE" msg
+          | None, _ -> ())
 
-    let on_guild_emojis_update (c : t) (f : t -> unit) : unit =
-      add_untyped_handler c Discord_private.P_event.Guild_emojis_update f
+    let on_guild_emojis_update (c : t)
+        (f : t -> string -> Emoji.t list -> Emoji.t list -> unit) : unit =
+      add_handler c Discord_private.P_event.Guild_emojis_update
+        (fun t snap json ->
+          let open Yojson.Safe.Util in
+          match json |> member "guild_id" |> to_string_option with
+          | Some guild_id ->
+              let emojis =
+                decode_list c "GUILD_EMOJIS_UPDATE" Emoji.of_yojson json
+                  "emojis"
+              in
+              f t guild_id snap.emojis emojis
+          | None -> ())
 
-    let on_guild_stickers_update (c : t) (f : t -> unit) : unit =
-      add_untyped_handler c Discord_private.P_event.Guild_stickers_update f
+    let on_guild_stickers_update (c : t)
+        (f : t -> string -> Sticker.t list -> Sticker.t list -> unit) : unit =
+      add_handler c Discord_private.P_event.Guild_stickers_update
+        (fun t snap json ->
+          let open Yojson.Safe.Util in
+          match json |> member "guild_id" |> to_string_option with
+          | Some guild_id ->
+              let stickers =
+                decode_list c "GUILD_STICKERS_UPDATE" Sticker.of_yojson json
+                  "stickers"
+              in
+              f t guild_id snap.stickers stickers
+          | None -> ())
 
-    let on_guild_integrations_update (c : t) (f : t -> unit) : unit =
-      add_untyped_handler c Discord_private.P_event.Guild_integrations_update f
+    let on_guild_integrations_update (c : t)
+        (f : t -> string -> Guild.t option -> unit) : unit =
+      add_handler c Discord_private.P_event.Guild_integrations_update
+        (fun t snap json ->
+          let open Yojson.Safe.Util in
+          match json |> member "guild_id" |> to_string_option with
+          | Some guild_id -> f t guild_id snap.guild
+          | None -> ())
 
-    let on_guild_member_add (c : t) (f : t -> unit) : unit =
-      add_untyped_handler c Discord_private.P_event.Guild_member_add f
+    let on_guild_member_add (c : t) (f : t -> string -> Member.t -> unit) : unit
+        =
+      add_handler c Discord_private.P_event.Guild_member_add (fun t _ json ->
+          let open Yojson.Safe.Util in
+          match
+            ( json |> member "guild_id" |> to_string_option,
+              Member.of_yojson json )
+          with
+          | Some guild_id, Ok member -> f t guild_id member
+          | Some _, Error msg -> log_decode_error c "GUILD_MEMBER_ADD" msg
+          | None, _ -> ())
 
-    let on_guild_member_remove (c : t) (f : t -> unit) : unit =
-      add_untyped_handler c Discord_private.P_event.Guild_member_remove f
+    let on_guild_member_remove (c : t)
+        (f : t -> Event_payload.Member_remove.t -> unit) : unit =
+      add_handler c Discord_private.P_event.Guild_member_remove
+        (fun t snap json ->
+          let open Yojson.Safe.Util in
+          match
+            ( json |> member "guild_id" |> to_string_option,
+              User.of_yojson (json |> member "user") )
+          with
+          | Some guild_id, Ok user ->
+              f t { guild_id; user; member = snap.member }
+          | Some _, Error msg -> log_decode_error c "GUILD_MEMBER_REMOVE" msg
+          | None, _ -> ())
 
-    let on_guild_member_update (c : t) (f : t -> unit) : unit =
-      add_untyped_handler c Discord_private.P_event.Guild_member_update f
+    let on_guild_member_update (c : t)
+        (f : t -> string -> Member.t option -> Member.t -> unit) : unit =
+      add_handler c Discord_private.P_event.Guild_member_update
+        (fun t snap json ->
+          let open Yojson.Safe.Util in
+          match
+            ( json |> member "guild_id" |> to_string_option,
+              Member.of_yojson json )
+          with
+          | Some guild_id, Ok member -> f t guild_id snap.member member
+          | Some _, Error msg -> log_decode_error c "GUILD_MEMBER_UPDATE" msg
+          | None, _ -> ())
 
-    let on_guild_members_chunk (c : t) (f : t -> unit) : unit =
-      add_untyped_handler c Discord_private.P_event.Guild_members_chunk f
+    let on_guild_members_chunk (c : t)
+        (f : t -> Event_payload.Guild_members_chunk.t -> unit) : unit =
+      add_handler c Discord_private.P_event.Guild_members_chunk
+        (fun t snap json ->
+          let open Yojson.Safe.Util in
+          match json |> member "guild_id" |> to_string_option with
+          | None -> log_decode_error c "GUILD_MEMBERS_CHUNK" "missing guild_id"
+          | Some guild_id ->
+              let members =
+                decode_list c "GUILD_MEMBERS_CHUNK" Member.of_yojson json
+                  "members"
+              in
+              let presences =
+                decode_list c "GUILD_MEMBERS_CHUNK" Presence.of_yojson json
+                  "presences"
+              in
+              let count =
+                json |> member "chunk_count" |> to_int_option
+                |> Option.value ~default:0
+              in
+              let index =
+                json |> member "chunk_index" |> to_int_option
+                |> Option.value ~default:0
+              in
+              let nonce = json |> member "nonce" |> to_string_option in
+              let not_found = string_list (json |> member "not_found") in
+              f t
+                {
+                  guild_id;
+                  members;
+                  presences;
+                  guild = snap.guild;
+                  count;
+                  index;
+                  nonce;
+                  not_found;
+                })
 
-    let on_guild_role_create (c : t) (f : t -> unit) : unit =
-      add_untyped_handler c Discord_private.P_event.Guild_role_create f
+    let role_of_json (json : Yojson.Safe.t) : (Role.t, string) result =
+      let open Yojson.Safe.Util in
+      Role.of_yojson (json |> member "role")
 
-    let on_guild_role_update (c : t) (f : t -> unit) : unit =
-      add_untyped_handler c Discord_private.P_event.Guild_role_update f
+    let on_guild_role_create (c : t) (f : t -> string -> Role.t -> unit) : unit
+        =
+      add_handler c Discord_private.P_event.Guild_role_create (fun t _ json ->
+          let open Yojson.Safe.Util in
+          match
+            (json |> member "guild_id" |> to_string_option, role_of_json json)
+          with
+          | Some guild_id, Ok role -> f t guild_id role
+          | Some _, Error msg -> log_decode_error c "GUILD_ROLE_CREATE" msg
+          | None, _ -> ())
 
-    let on_guild_role_delete (c : t) (f : t -> unit) : unit =
-      add_untyped_handler c Discord_private.P_event.Guild_role_delete f
+    let on_guild_role_update (c : t)
+        (f : t -> string -> Role.t option -> Role.t -> unit) : unit =
+      add_handler c Discord_private.P_event.Guild_role_update
+        (fun t snap json ->
+          let open Yojson.Safe.Util in
+          match
+            (json |> member "guild_id" |> to_string_option, role_of_json json)
+          with
+          | Some guild_id, Ok role -> f t guild_id snap.role role
+          | Some _, Error msg -> log_decode_error c "GUILD_ROLE_UPDATE" msg
+          | None, _ -> ())
+
+    let on_guild_role_delete (c : t)
+        (f : t -> Event_payload.Role_delete.t -> unit) : unit =
+      add_handler c Discord_private.P_event.Guild_role_delete
+        (fun t snap json ->
+          let open Yojson.Safe.Util in
+          match
+            ( json |> member "guild_id" |> to_string_option,
+              json |> member "role_id" |> to_string_option )
+          with
+          | Some guild_id, Some role_id ->
+              f t { guild_id; role_id; role = snap.role }
+          | _ -> ())
 
     let on_guild_scheduled_event_create (c : t) (f : t -> unit) : unit =
       add_untyped_handler c Discord_private.P_event.Guild_scheduled_event_create
@@ -1518,7 +1812,8 @@ include (
 
     let on_message_poll_vote_add (c : t)
         (f : t -> Event_payload.Message_poll_vote.t -> unit) : unit =
-      add_handler c Discord_private.P_event.Message_poll_vote_add (fun t json ->
+      add_handler c Discord_private.P_event.Message_poll_vote_add
+        (fun t _ json ->
           match poll_vote_payload t json with
           | Ok payload -> f t payload
           | Error msg -> log_decode_error c "MESSAGE_POLL_VOTE_ADD" msg)
@@ -1526,7 +1821,7 @@ include (
     let on_message_poll_vote_remove (c : t)
         (f : t -> Event_payload.Message_poll_vote.t -> unit) : unit =
       add_handler c Discord_private.P_event.Message_poll_vote_remove
-        (fun t json ->
+        (fun t _ json ->
           match poll_vote_payload t json with
           | Ok payload -> f t payload
           | Error msg -> log_decode_error c "MESSAGE_POLL_VOTE_REMOVE" msg)
@@ -1657,7 +1952,8 @@ include (
             dispatch_reaction_remove_all ~sw c json
         | Some Discord_private.P_event.Message_reaction_remove_emoji ->
             dispatch_reaction_remove_emoji ~sw c json
-        | Some event ->
+        | Some event -> (
+            let snap = snapshot_event c event json in
             cache_event c event json;
             (match event with
             | Discord_private.P_event.Ready -> (
@@ -1665,14 +1961,19 @@ include (
                 | Ok user -> c.user <- Some user
                 | Error _ -> ())
             | _ -> ());
-            let handlers =
-              match Hashtbl.find_opt (Atomic.get c.handlers) event with
-              | Some l -> l
-              | None -> []
-            in
-            List.iter
-              (fun f -> Eio.Fiber.fork ~sw (fun () -> f c json))
-              handlers
+            match event with
+            | Discord_private.P_event.Guild_create
+              when json |> member "unavailable" |> to_bool_option = Some true ->
+                ()
+            | _ ->
+                let handlers =
+                  match Hashtbl.find_opt (Atomic.get c.handlers) event with
+                  | Some l -> l
+                  | None -> []
+                in
+                List.iter
+                  (fun f -> Eio.Fiber.fork ~sw (fun () -> f c snap json))
+                  handlers)
       in
       let rec spawn i =
         if i < info.shards then begin
