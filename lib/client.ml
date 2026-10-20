@@ -1020,6 +1020,90 @@ include (struct
                 (Atomic.get c.message_delete_bulk_handlers)
         | None -> ()
 
+    let added_reaction (update : reaction_event)
+            (previous : Reaction.t option) (is_me : bool) : Reaction.t =
+        match previous with
+        | Some reaction ->
+            let details = Reaction.count_details reaction in
+            let count_details =
+                if update.burst then
+                    Reaction.Count_details.make
+                        ~burst:(Reaction.Count_details.burst details + 1)
+                        ~normal:(Reaction.Count_details.normal details)
+                else
+                    Reaction.Count_details.make
+                        ~burst:(Reaction.Count_details.burst details)
+                        ~normal:(Reaction.Count_details.normal details + 1)
+            in
+            let burst_colors =
+                if update.burst then
+                    List.fold_left
+                        (fun colors color ->
+                           if List.mem color colors then colors
+                           else colors @ [ color ])
+                        (Reaction.burst_colors reaction)
+                        update.burst_colors
+                else Reaction.burst_colors reaction
+            in
+            Reaction.make ~channel_id:(Reaction.channel_id reaction)
+                ~message_id:update.message_id
+                ~emoji:(Reaction.emoji reaction)
+                ~count:(Reaction.count reaction + 1)
+                ~me:(Reaction.me reaction || is_me) ~count_details
+                ~burst_colors
+                ~me_burst:
+                    (Reaction.me_burst reaction || (is_me && update.burst))
+        | None ->
+            let count_details =
+                Reaction.Count_details.make
+                    ~burst:(if update.burst then 1 else 0)
+                    ~normal:(if update.burst then 0 else 1)
+            in
+            Reaction.make ~channel_id:update.channel_id
+                ~message_id:update.message_id ~emoji:update.emoji ~count:1
+                ~me:is_me ~count_details ~burst_colors:update.burst_colors
+                ~me_burst:(is_me && update.burst)
+
+    let removed_reaction (update : reaction_event)
+            (previous : Reaction.t option) (is_me : bool) : Reaction.t =
+        match previous with
+        | Some reaction ->
+            let count = Reaction.count reaction in
+            let details = Reaction.count_details reaction in
+            let count_details =
+                if update.burst then
+                    Reaction.Count_details.make
+                        ~burst:
+                            (max 0
+                                 (Reaction.Count_details.burst details - 1))
+                        ~normal:(Reaction.Count_details.normal details)
+                else
+                    Reaction.Count_details.make
+                        ~burst:(Reaction.Count_details.burst details)
+                        ~normal:
+                            (max 0
+                                 (Reaction.Count_details.normal details - 1))
+            in
+            Reaction.make ~channel_id:(Reaction.channel_id reaction)
+                ~message_id:update.message_id
+                ~emoji:(Reaction.emoji reaction)
+                ~count:(max 0 (count - 1))
+                ~me:
+                    (if is_me && not update.burst then false
+                     else Reaction.me reaction)
+                ~count_details
+                ~burst_colors:(Reaction.burst_colors reaction)
+                ~me_burst:
+                    (if is_me && update.burst then false
+                     else Reaction.me_burst reaction)
+        | None ->
+            Reaction.make ~channel_id:update.channel_id
+                ~message_id:update.message_id ~emoji:update.emoji
+                ~count:0 ~me:false
+                ~count_details:
+                    (Reaction.Count_details.make ~burst:0 ~normal:0)
+                ~burst_colors:update.burst_colors ~me_burst:false
+
     let dispatch_reaction ~sw (c : t)
             (event : Discord_private.P_event.t) (json : Yojson.Safe.t) :
         unit =
@@ -1043,53 +1127,10 @@ include (struct
                 match current with
                 | Some reaction -> reaction
                 | None ->
-                    (match previous with
-                     | Some reaction ->
-                         let count = Reaction.count reaction in
-                         let details = Reaction.count_details reaction in
-                         let count_details =
-                             if update.burst then
-                                 Reaction.Count_details.make
-                                     ~burst:
-                                         (max 0
-                                              (Reaction.Count_details.burst
-                                                   details
-                                               - 1))
-                                     ~normal:
-                                         (Reaction.Count_details.normal
-                                              details)
-                             else
-                                 Reaction.Count_details.make
-                                     ~burst:
-                                         (Reaction.Count_details.burst
-                                              details)
-                                     ~normal:
-                                         (max 0
-                                              (Reaction.Count_details.normal
-                                                   details
-                                               - 1))
-                         in
-                         Reaction.make
-                             ~channel_id:(Reaction.channel_id reaction)
-                             ~message_id:update.message_id
-                             ~emoji:(Reaction.emoji reaction)
-                             ~count:(max 0 (count - 1))
-                             ~me:
-                                 (if is_me && not update.burst then false
-                                  else Reaction.me reaction)
-                             ~count_details
-                             ~burst_colors:(Reaction.burst_colors reaction)
-                             ~me_burst:
-                                 (if is_me && update.burst then false
-                                  else Reaction.me_burst reaction)
-                     | None ->
-                         Reaction.make ~channel_id:update.channel_id
-                             ~message_id:update.message_id ~emoji:update.emoji
-                             ~count:0 ~me:false
-                             ~count_details:
-                                 (Reaction.Count_details.make ~burst:0
-                                    ~normal:0)
-                             ~burst_colors:update.burst_colors ~me_burst:false)
+                    (match event with
+                     | Discord_private.P_event.Message_reaction_add ->
+                         added_reaction update previous is_me
+                     | _ -> removed_reaction update previous is_me)
             in
             let user = user_by_id c update.user_id in
             let payload : Event_payload.Message_reaction.t =
