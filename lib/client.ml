@@ -1628,6 +1628,10 @@ include (
                 decode_list c "GUILD_MEMBERS_CHUNK" Member.of_yojson json
                   "members"
               in
+              let presences =
+                decode_list c "GUILD_MEMBERS_CHUNK" Presence.of_yojson json
+                  "presences"
+              in
               let count =
                 json |> member "chunk_count" |> to_int_option
                 |> Option.value ~default:0
@@ -1642,6 +1646,7 @@ include (
                 {
                   guild_id;
                   members;
+                  presences;
                   guild = snap.guild;
                   count;
                   index;
