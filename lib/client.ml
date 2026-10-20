@@ -765,14 +765,23 @@ include (struct
                                              ~burst:old_burst
                                              ~normal:(old_normal + 1)
                                  in
+                                 let burst_colors =
+                                     if burst then
+                                         List.fold_left
+                                             (fun colors color ->
+                                                if List.mem color colors then
+                                                    colors
+                                                else colors @ [ color ])
+                                             (Reaction.burst_colors r)
+                                             burst_colors
+                                     else Reaction.burst_colors r
+                                 in
                                  Hashtbl.replace c.reactions key
                                      (Reaction.make ~channel_id ~message_id
                                         ~emoji
                                         ~count:(Reaction.count r + 1)
                                         ~me:(Reaction.me r || is_me)
-                                        ~count_details
-                                        ~burst_colors:
-                                            (Reaction.burst_colors r)
+                                        ~count_details ~burst_colors
                                         ~me_burst:
                                             (Reaction.me_burst r
                                              || (is_me && burst)))
