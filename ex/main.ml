@@ -1,5 +1,6 @@
+let () = Env.load_dotenv ".env"
+
 let token : string =
-    Dotenv.export () |> ignore;
     match Sys.getenv_opt "DISCORD_TOKEN" with
     | None -> failwith "No token found"
     | Some token -> token
