@@ -136,6 +136,18 @@ end
 
 include (
   struct
+    type snapshot = {
+      guild : Guild.t option;
+      channel : Channel.t option;
+      member : Member.t option;
+      presence : Presence.t option;
+      role : Role.t option;
+      user : User.t option;
+      thread_member : Thread_member.t option;
+      emojis : Emoji.t list;
+      stickers : Sticker.t list;
+    }
+
     type t = {
       mutable token : string option;
       intents : int;
@@ -193,7 +205,9 @@ include (
             fun fmt tbl -> Format.fprintf fmt "[ ...%d ]" (Hashtbl.length tbl)]
       shards_mutex : Eio.Mutex.t; [@opaque]
       handlers :
-        (Discord_private.P_event.t, (t -> Yojson.Safe.t -> unit) list) Hashtbl.t
+        ( Discord_private.P_event.t,
+          (t -> snapshot -> Yojson.Safe.t -> unit) list )
+        Hashtbl.t
         Atomic.t;
           [@opaque]
       message_handlers : (t -> Message.t -> unit) list Atomic.t; [@opaque]
@@ -944,6 +958,77 @@ include (
               | None -> ()))
       | _ -> ()
 
+    let snapshot_event (c : t) (event : Discord_private.P_event.t)
+        (json : Yojson.Safe.t) : snapshot =
+      let find_member = member in
+      let open Yojson.Safe.Util in
+      let empty =
+        {
+          guild = None;
+          channel = None;
+          member = None;
+          presence = None;
+          role = None;
+          user = None;
+          thread_member = None;
+          emojis = [];
+          stickers = [];
+        }
+      in
+      let with_guild guild_id =
+        match guild_id with
+        | Some guild_id -> { empty with guild = guild c guild_id }
+        | None -> empty
+      in
+      match event with
+      | Discord_private.P_event.Guild_update
+      | Discord_private.P_event.Guild_delete ->
+          with_guild (json |> member "id" |> to_string_option)
+      | Discord_private.P_event.Guild_integrations_update
+      | Discord_private.P_event.Guild_members_chunk ->
+          with_guild (json |> member "guild_id" |> to_string_option)
+      | Discord_private.P_event.Guild_role_update -> (
+          match
+            ( json |> member "guild_id" |> to_string_option,
+              json |> member "role" |> member "id" |> to_string_option )
+          with
+          | Some guild_id, Some role_id ->
+              { empty with role = role c ~guild_id ~role_id }
+          | _ -> empty)
+      | Discord_private.P_event.Guild_role_delete -> (
+          match
+            ( json |> member "guild_id" |> to_string_option,
+              json |> member "role_id" |> to_string_option )
+          with
+          | Some guild_id, Some role_id ->
+              { empty with role = role c ~guild_id ~role_id }
+          | _ -> empty)
+      | Discord_private.P_event.Guild_member_update
+      | Discord_private.P_event.Guild_member_remove -> (
+          match
+            ( json |> member "guild_id" |> to_string_option,
+              json |> member "user" |> member "id" |> to_string_option )
+          with
+          | Some guild_id, Some user_id ->
+              { empty with member = find_member c ~guild_id ~user_id }
+          | _ -> empty)
+      | Discord_private.P_event.Guild_emojis_update -> (
+          match json |> member "guild_id" |> to_string_option with
+          | Some guild_id -> (
+              match guild c guild_id with
+              | Some g -> { empty with guild = Some g; emojis = Guild.emojis g }
+              | None -> empty)
+          | None -> empty)
+      | Discord_private.P_event.Guild_stickers_update -> (
+          match json |> member "guild_id" |> to_string_option with
+          | Some guild_id -> (
+              match guild c guild_id with
+              | Some g ->
+                  { empty with guild = Some g; stickers = Guild.stickers g }
+              | None -> empty)
+          | None -> empty)
+      | _ -> empty
+
     type reaction_event = {
       channel_id : string;
       message_id : string;
@@ -1231,7 +1316,7 @@ include (
           | _ -> ())
 
     let add_handler (c : t) (event : Discord_private.P_event.t)
-        (f : t -> Yojson.Safe.t -> unit) : unit =
+        (f : t -> snapshot -> Yojson.Safe.t -> unit) : unit =
       let rec add () =
         let old = Atomic.get c.handlers in
         let tbl = Hashtbl.copy old in
@@ -1245,12 +1330,12 @@ include (
 
     let add_untyped_handler (c : t) (event : Discord_private.P_event.t)
         (f : t -> unit) : unit =
-      add_handler c event (fun t _ -> f t)
+      add_handler c event (fun t _ _ -> f t)
 
     let add_decoded_handler (c : t) (event : Discord_private.P_event.t)
         (of_yojson : Yojson.Safe.t -> ('a, string) result) (f : t -> 'a -> unit)
         : unit =
-      add_handler c event (fun t json ->
+      add_handler c event (fun t _ json ->
           match of_yojson json with
           | Ok payload -> f t payload
           | Error msg ->
@@ -1518,7 +1603,8 @@ include (
 
     let on_message_poll_vote_add (c : t)
         (f : t -> Event_payload.Message_poll_vote.t -> unit) : unit =
-      add_handler c Discord_private.P_event.Message_poll_vote_add (fun t json ->
+      add_handler c Discord_private.P_event.Message_poll_vote_add
+        (fun t _ json ->
           match poll_vote_payload t json with
           | Ok payload -> f t payload
           | Error msg -> log_decode_error c "MESSAGE_POLL_VOTE_ADD" msg)
@@ -1526,7 +1612,7 @@ include (
     let on_message_poll_vote_remove (c : t)
         (f : t -> Event_payload.Message_poll_vote.t -> unit) : unit =
       add_handler c Discord_private.P_event.Message_poll_vote_remove
-        (fun t json ->
+        (fun t _ json ->
           match poll_vote_payload t json with
           | Ok payload -> f t payload
           | Error msg -> log_decode_error c "MESSAGE_POLL_VOTE_REMOVE" msg)
@@ -1658,6 +1744,7 @@ include (
         | Some Discord_private.P_event.Message_reaction_remove_emoji ->
             dispatch_reaction_remove_emoji ~sw c json
         | Some event ->
+            let snap = snapshot_event c event json in
             cache_event c event json;
             (match event with
             | Discord_private.P_event.Ready -> (
@@ -1671,7 +1758,7 @@ include (
               | None -> []
             in
             List.iter
-              (fun f -> Eio.Fiber.fork ~sw (fun () -> f c json))
+              (fun f -> Eio.Fiber.fork ~sw (fun () -> f c snap json))
               handlers
       in
       let rec spawn i =
