@@ -602,48 +602,59 @@ include (
         | Ok v -> on_ok v
         | Error msg -> log_decode_error c name msg
       in
+      let cache_guild (g : Guild.t) : unit =
+        let guild_id = Guild.id g in
+        Eio.Mutex.use_rw ~protect:true c.guilds_mutex (fun () ->
+            Hashtbl.replace c.guilds guild_id g);
+        put_guild_channels c name guild_id json;
+        List.iter (put_channel c) (Guild.threads g);
+        List.iter (put_role c guild_id) (Guild.roles g);
+        List.iter (put_scheduled_event c) (Guild.scheduled_events g);
+        List.iter (put_stage_instance c) (Guild.stage_instances g);
+        List.iter
+          (fun m ->
+            put_member c guild_id (User.id (Member.user m)) m;
+            put_user c (Member.user m))
+          (Guild.members g);
+        List.iter
+          (fun p ->
+            put_presence c guild_id (User.id (Presence.user p)) p;
+            put_user c (Presence.user p))
+          (Guild.presences g)
+      in
       match event with
       | Discord_private.P_event.Ready -> (
           match User.of_yojson (json |> member "user") with
           | Ok u -> put_user c u
           | Error msg -> log_decode_error c name msg)
       | Discord_private.P_event.Guild_create
+        when json |> member "unavailable" |> to_bool_option = Some true ->
+          ()
+      | Discord_private.P_event.Guild_create
       | Discord_private.P_event.Guild_update ->
-          decode Guild.of_yojson (fun g ->
-              let guild_id = Guild.id g in
-              Eio.Mutex.use_rw ~protect:true c.guilds_mutex (fun () ->
-                  Hashtbl.replace c.guilds guild_id g);
-              put_guild_channels c name guild_id json;
-              List.iter (put_channel c) (Guild.threads g);
-              List.iter (put_role c guild_id) (Guild.roles g);
-              List.iter (put_scheduled_event c) (Guild.scheduled_events g);
-              List.iter (put_stage_instance c) (Guild.stage_instances g);
-              List.iter
-                (fun m ->
-                  put_member c guild_id (User.id (Member.user m)) m;
-                  put_user c (Member.user m))
-                (Guild.members g);
-              List.iter
-                (fun p ->
-                  put_presence c guild_id (User.id (Presence.user p)) p;
-                  put_user c (Presence.user p))
-                (Guild.presences g))
+          decode Guild.of_yojson cache_guild
       | Discord_private.P_event.Guild_delete -> (
           match json |> member "id" |> to_string_option with
           | Some guild_id ->
-              let channel_ids = channel_ids_for_guild c guild_id in
-              Eio.Mutex.use_rw ~protect:true c.guilds_mutex (fun () ->
-                  Hashtbl.remove c.guilds guild_id);
-              drop_guild_channels c guild_id;
-              drop_guild_members c guild_id;
-              drop_guild_presences c guild_id;
-              drop_guild_roles c guild_id;
-              drop_guild_scheduled_events c guild_id;
-              drop_guild_stage_instances c guild_id;
-              drop_guild_auto_moderation_rules c guild_id;
-              drop_guild_thread_members c channel_ids;
-              let message_ids = drop_guild_messages c channel_ids in
-              drop_reactions c message_ids
+              let unavailable =
+                json |> member "unavailable" |> to_bool_option
+                |> Option.value ~default:false
+              in
+              if not unavailable then begin
+                let channel_ids = channel_ids_for_guild c guild_id in
+                Eio.Mutex.use_rw ~protect:true c.guilds_mutex (fun () ->
+                    Hashtbl.remove c.guilds guild_id);
+                drop_guild_channels c guild_id;
+                drop_guild_members c guild_id;
+                drop_guild_presences c guild_id;
+                drop_guild_roles c guild_id;
+                drop_guild_scheduled_events c guild_id;
+                drop_guild_stage_instances c guild_id;
+                drop_guild_auto_moderation_rules c guild_id;
+                drop_guild_thread_members c channel_ids;
+                let message_ids = drop_guild_messages c channel_ids in
+                drop_reactions c message_ids
+              end
           | None -> ())
       | Discord_private.P_event.Channel_create
       | Discord_private.P_event.Channel_update ->
@@ -1743,7 +1754,7 @@ include (
             dispatch_reaction_remove_all ~sw c json
         | Some Discord_private.P_event.Message_reaction_remove_emoji ->
             dispatch_reaction_remove_emoji ~sw c json
-        | Some event ->
+        | Some event -> (
             let snap = snapshot_event c event json in
             cache_event c event json;
             (match event with
@@ -1752,14 +1763,19 @@ include (
                 | Ok user -> c.user <- Some user
                 | Error _ -> ())
             | _ -> ());
-            let handlers =
-              match Hashtbl.find_opt (Atomic.get c.handlers) event with
-              | Some l -> l
-              | None -> []
-            in
-            List.iter
-              (fun f -> Eio.Fiber.fork ~sw (fun () -> f c snap json))
-              handlers
+            match event with
+            | Discord_private.P_event.Guild_create
+              when json |> member "unavailable" |> to_bool_option = Some true ->
+                ()
+            | _ ->
+                let handlers =
+                  match Hashtbl.find_opt (Atomic.get c.handlers) event with
+                  | Some l -> l
+                  | None -> []
+                in
+                List.iter
+                  (fun f -> Eio.Fiber.fork ~sw (fun () -> f c snap json))
+                  handlers)
       in
       let rec spawn i =
         if i < info.shards then begin
