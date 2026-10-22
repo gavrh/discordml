@@ -128,8 +128,8 @@ module type Client = sig
   val on_integration_update : t -> (t -> unit) -> unit
   val on_integration_delete : t -> (t -> unit) -> unit
   val on_interaction_create : t -> (t -> unit) -> unit
-  val on_invite_create : t -> (t -> unit) -> unit
-  val on_invite_delete : t -> (t -> unit) -> unit
+  val on_invite_create : t -> (t -> Invite.t -> unit) -> unit
+  val on_invite_delete : t -> (t -> Invite.t -> unit) -> unit
   val on_message : t -> (t -> Message.t -> unit) -> unit
 
   val on_message_update :
@@ -1912,11 +1912,13 @@ include (
     let on_interaction_create (c : t) (f : t -> unit) : unit =
       add_untyped_handler c Discord_private.P_event.Interaction_create f
 
-    let on_invite_create (c : t) (f : t -> unit) : unit =
-      add_untyped_handler c Discord_private.P_event.Invite_create f
+    let on_invite_create (c : t) (f : t -> Invite.t -> unit) : unit =
+      add_decoded_handler c Discord_private.P_event.Invite_create
+        Invite.of_yojson f
 
-    let on_invite_delete (c : t) (f : t -> unit) : unit =
-      add_untyped_handler c Discord_private.P_event.Invite_delete f
+    let on_invite_delete (c : t) (f : t -> Invite.t -> unit) : unit =
+      add_decoded_handler c Discord_private.P_event.Invite_delete
+        Invite.of_yojson f
 
     let on_message (c : t) (f : t -> Message.t -> unit) : unit =
       add_message_handler c f
