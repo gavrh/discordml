@@ -166,7 +166,7 @@ module type Client = sig
   val on_stage_instance_update : t -> (t -> unit) -> unit
   val on_stage_instance_delete : t -> (t -> unit) -> unit
   val on_typing_start : t -> (t -> Typing.t -> unit) -> unit
-  val on_user_update : t -> (t -> unit) -> unit
+  val on_user_update : t -> (t -> User.t option -> User.t -> unit) -> unit
   val on_voice_channel_effect_send : t -> (t -> unit) -> unit
   val on_voice_state_update : t -> (t -> unit) -> unit
   val on_voice_server_update : t -> (t -> unit) -> unit
@@ -1022,6 +1022,7 @@ include (
       let find_channel = channel in
       let find_guild = guild in
       let find_presence = presence in
+      let find_user = user_by_id in
       let find_thread_member = thread_member in
       let open Yojson.Safe.Util in
       let empty =
@@ -1134,6 +1135,10 @@ include (
           | Some guild_id, Some user_id ->
               { empty with presence = find_presence c ~guild_id ~user_id }
           | _ -> empty)
+      | Discord_private.P_event.User_update -> (
+          match json |> member "id" |> to_string_option with
+          | Some user_id -> { empty with user = find_user c user_id }
+          | None -> empty)
       | _ -> empty
 
     type reaction_event = {
@@ -2032,8 +2037,12 @@ include (
           | None -> ());
           f t typing)
 
-    let on_user_update (c : t) (f : t -> unit) : unit =
-      add_untyped_handler c Discord_private.P_event.User_update f
+    let on_user_update (c : t) (f : t -> User.t option -> User.t -> unit) : unit
+        =
+      add_handler c Discord_private.P_event.User_update (fun t snap json ->
+          match User.of_yojson json with
+          | Ok user -> f t snap.user user
+          | Error msg -> log_decode_error c "USER_UPDATE" msg)
 
     let on_voice_channel_effect_send (c : t) (f : t -> unit) : unit =
       add_untyped_handler c Discord_private.P_event.Voice_channel_effect_send f
