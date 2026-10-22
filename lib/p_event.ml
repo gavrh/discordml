@@ -10,7 +10,6 @@ module type Event = sig
     | Channel_create
     | Channel_update
     | Channel_delete
-    | Channel_info
     | Channel_pins_update
     | Thread_create
     | Thread_update
@@ -96,7 +95,6 @@ include (
       | Channel_create
       | Channel_update
       | Channel_delete
-      | Channel_info
       | Channel_pins_update
       | Thread_create
       | Thread_update
@@ -178,7 +176,6 @@ include (
       | "CHANNEL_CREATE" -> Some Channel_create
       | "CHANNEL_UPDATE" -> Some Channel_update
       | "CHANNEL_DELETE" -> Some Channel_delete
-      | "CHANNEL_INFO" -> Some Channel_info
       | "CHANNEL_PINS_UPDATE" -> Some Channel_pins_update
       | "THREAD_CREATE" -> Some Thread_create
       | "THREAD_UPDATE" -> Some Thread_update
@@ -262,7 +259,6 @@ include (
       | Channel_create -> "CHANNEL_CREATE"
       | Channel_update -> "CHANNEL_UPDATE"
       | Channel_delete -> "CHANNEL_DELETE"
-      | Channel_info -> "CHANNEL_INFO"
       | Channel_pins_update -> "CHANNEL_PINS_UPDATE"
       | Thread_create -> "THREAD_CREATE"
       | Thread_update -> "THREAD_UPDATE"

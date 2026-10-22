@@ -49,8 +49,6 @@ module type Client = sig
   val on_channel_delete :
     t -> (t -> Event_payload.Channel_delete.t -> unit) -> unit
 
-  val on_channel_info : t -> (t -> unit) -> unit
-
   val on_channel_pins_update :
     t -> (t -> Event_payload.Channel_pins_update.t -> unit) -> unit
 
@@ -1558,9 +1556,6 @@ include (
               let type_ = json |> member "type" |> to_int_option in
               f t { id; guild_id; type_; channel = snap.channel }
           | None -> log_decode_error c "CHANNEL_DELETE" "missing id")
-
-    let on_channel_info (c : t) (f : t -> unit) : unit =
-      add_untyped_handler c Discord_private.P_event.Channel_info f
 
     let on_channel_pins_update (c : t)
         (f : t -> Event_payload.Channel_pins_update.t -> unit) : unit =
