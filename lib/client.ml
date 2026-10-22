@@ -159,7 +159,9 @@ module type Client = sig
   val on_message_poll_vote_remove :
     t -> (t -> Event_payload.Message_poll_vote.t -> unit) -> unit
 
-  val on_presence_update : t -> (t -> unit) -> unit
+  val on_presence_update :
+    t -> (t -> Presence.t option -> Presence.t -> unit) -> unit
+
   val on_stage_instance_create : t -> (t -> unit) -> unit
   val on_stage_instance_update : t -> (t -> unit) -> unit
   val on_stage_instance_delete : t -> (t -> unit) -> unit
@@ -1019,6 +1021,7 @@ include (
       let find_member = member in
       let find_channel = channel in
       let find_guild = guild in
+      let find_presence = presence in
       let find_thread_member = thread_member in
       let open Yojson.Safe.Util in
       let empty =
@@ -1123,6 +1126,14 @@ include (
               in
               { empty with channel = find_channel c thread_id; thread_members }
           | None -> empty)
+      | Discord_private.P_event.Presence_update -> (
+          match
+            ( json |> member "guild_id" |> to_string_option,
+              json |> member "user" |> member "id" |> to_string_option )
+          with
+          | Some guild_id, Some user_id ->
+              { empty with presence = find_presence c ~guild_id ~user_id }
+          | _ -> empty)
       | _ -> empty
 
     type reaction_event = {
@@ -1989,8 +2000,12 @@ include (
           | Ok payload -> f t payload
           | Error msg -> log_decode_error c "MESSAGE_POLL_VOTE_REMOVE" msg)
 
-    let on_presence_update (c : t) (f : t -> unit) : unit =
-      add_untyped_handler c Discord_private.P_event.Presence_update f
+    let on_presence_update (c : t)
+        (f : t -> Presence.t option -> Presence.t -> unit) : unit =
+      add_handler c Discord_private.P_event.Presence_update (fun t snap json ->
+          match Presence.of_yojson json with
+          | Ok presence -> f t snap.presence presence
+          | Error msg -> log_decode_error c "PRESENCE_UPDATE" msg)
 
     let on_stage_instance_create (c : t) (f : t -> unit) : unit =
       add_untyped_handler c Discord_private.P_event.Stage_instance_create f
