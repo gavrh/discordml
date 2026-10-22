@@ -144,3 +144,31 @@ module Guild_members_chunk = struct
   let nonce (t : t) : string option = t.nonce
   let not_found (t : t) : string list = t.not_found
 end
+
+module Channel_delete = struct
+  type t = {
+    id : string;
+    guild_id : string option;
+    type_ : int option;
+    channel : Channel.t option;
+  }
+
+  let id (t : t) : string = t.id
+  let guild_id (t : t) : string option = t.guild_id
+  let type_ (t : t) : int option = t.type_
+  let channel (t : t) : Channel.t option = t.channel
+end
+
+module Channel_pins_update = struct
+  type t = {
+    channel_id : string;
+    guild_id : string option;
+    last_pin_timestamp : string option;
+    channel : Channel.t option;
+  }
+
+  let channel_id (t : t) : string = t.channel_id
+  let guild_id (t : t) : string option = t.guild_id
+  let last_pin_timestamp (t : t) : string option = t.last_pin_timestamp
+  let channel (t : t) : Channel.t option = t.channel
+end

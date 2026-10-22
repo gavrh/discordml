@@ -41,11 +41,19 @@ module type Client = sig
   val on_auto_moderation_rule_update : t -> (t -> unit) -> unit
   val on_auto_moderation_rule_delete : t -> (t -> unit) -> unit
   val on_auto_moderation_action_execution : t -> (t -> unit) -> unit
-  val on_channel_create : t -> (t -> unit) -> unit
-  val on_channel_update : t -> (t -> unit) -> unit
-  val on_channel_delete : t -> (t -> unit) -> unit
+  val on_channel_create : t -> (t -> Channel.t -> unit) -> unit
+
+  val on_channel_update :
+    t -> (t -> Channel.t option -> Channel.t -> unit) -> unit
+
+  val on_channel_delete :
+    t -> (t -> Event_payload.Channel_delete.t -> unit) -> unit
+
   val on_channel_info : t -> (t -> unit) -> unit
-  val on_channel_pins_update : t -> (t -> unit) -> unit
+
+  val on_channel_pins_update :
+    t -> (t -> Event_payload.Channel_pins_update.t -> unit) -> unit
+
   val on_thread_create : t -> (t -> unit) -> unit
   val on_thread_update : t -> (t -> unit) -> unit
   val on_thread_delete : t -> (t -> unit) -> unit
@@ -997,6 +1005,7 @@ include (
     let snapshot_event (c : t) (event : Discord_private.P_event.t)
         (json : Yojson.Safe.t) : snapshot =
       let find_member = member in
+      let find_channel = channel in
       let open Yojson.Safe.Util in
       let empty =
         {
@@ -1062,6 +1071,19 @@ include (
               | Some g ->
                   { empty with guild = Some g; stickers = Guild.stickers g }
               | None -> empty)
+          | None -> empty)
+      | Discord_private.P_event.Channel_update
+      | Discord_private.P_event.Channel_delete
+      | Discord_private.P_event.Thread_update
+      | Discord_private.P_event.Thread_delete -> (
+          match json |> member "id" |> to_string_option with
+          | Some channel_id ->
+              { empty with channel = find_channel c channel_id }
+          | None -> empty)
+      | Discord_private.P_event.Channel_pins_update -> (
+          match json |> member "channel_id" |> to_string_option with
+          | Some channel_id ->
+              { empty with channel = find_channel c channel_id }
           | None -> empty)
       | _ -> empty
 
@@ -1435,20 +1457,51 @@ include (
       add_untyped_handler c
         Discord_private.P_event.Auto_moderation_action_execution f
 
-    let on_channel_create (c : t) (f : t -> unit) : unit =
-      add_untyped_handler c Discord_private.P_event.Channel_create f
+    let on_channel_create (c : t) (f : t -> Channel.t -> unit) : unit =
+      add_decoded_handler c Discord_private.P_event.Channel_create
+        Channel.of_yojson f
 
-    let on_channel_update (c : t) (f : t -> unit) : unit =
-      add_untyped_handler c Discord_private.P_event.Channel_update f
+    let on_channel_update (c : t)
+        (f : t -> Channel.t option -> Channel.t -> unit) : unit =
+      add_handler c Discord_private.P_event.Channel_update (fun t snap json ->
+          match Channel.of_yojson json with
+          | Ok channel -> f t snap.channel channel
+          | Error msg -> log_decode_error c "CHANNEL_UPDATE" msg)
 
-    let on_channel_delete (c : t) (f : t -> unit) : unit =
-      add_untyped_handler c Discord_private.P_event.Channel_delete f
+    let on_channel_delete (c : t)
+        (f : t -> Event_payload.Channel_delete.t -> unit) : unit =
+      add_handler c Discord_private.P_event.Channel_delete (fun t snap json ->
+          let open Yojson.Safe.Util in
+          match json |> member "id" |> to_string_option with
+          | Some id ->
+              let guild_id = json |> member "guild_id" |> to_string_option in
+              let type_ = json |> member "type" |> to_int_option in
+              f t { id; guild_id; type_; channel = snap.channel }
+          | None -> log_decode_error c "CHANNEL_DELETE" "missing id")
 
     let on_channel_info (c : t) (f : t -> unit) : unit =
       add_untyped_handler c Discord_private.P_event.Channel_info f
 
-    let on_channel_pins_update (c : t) (f : t -> unit) : unit =
-      add_untyped_handler c Discord_private.P_event.Channel_pins_update f
+    let on_channel_pins_update (c : t)
+        (f : t -> Event_payload.Channel_pins_update.t -> unit) : unit =
+      add_handler c Discord_private.P_event.Channel_pins_update
+        (fun t snap json ->
+          let open Yojson.Safe.Util in
+          match json |> member "channel_id" |> to_string_option with
+          | Some channel_id ->
+              let guild_id = json |> member "guild_id" |> to_string_option in
+              let last_pin_timestamp =
+                json |> member "last_pin_timestamp" |> to_string_option
+              in
+              f t
+                {
+                  channel_id;
+                  guild_id;
+                  last_pin_timestamp;
+                  channel = snap.channel;
+                }
+          | None ->
+              log_decode_error c "CHANNEL_PINS_UPDATE" "missing channel_id")
 
     let on_thread_create (c : t) (f : t -> unit) : unit =
       add_untyped_handler c Discord_private.P_event.Thread_create f
