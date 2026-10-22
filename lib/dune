@@ -26,6 +26,7 @@
   message
   message_activity
   message_update
+  p_rate_limit
   permission
   poll
   presence
