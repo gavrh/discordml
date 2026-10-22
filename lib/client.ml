@@ -742,7 +742,7 @@ include (
                   ~message_id:(Message_update.id update)
               with
               | Some cached -> (
-                  let merged = Message_update.apply cached update in
+                  let merged = P_message_update.apply cached update in
                   put_message c merged;
                   match Message_update.reactions update with
                   | None -> ()
@@ -1845,7 +1845,7 @@ include (
             match (Typing.member typing, Typing.guild_id typing) with
             | None, Some guild_id -> (
                 match member t ~guild_id ~user_id:(Typing.user_id typing) with
-                | Some member -> Typing.with_member typing member
+                | Some member -> { typing with member = Some member }
                 | None -> typing)
             | _ -> typing
           in
