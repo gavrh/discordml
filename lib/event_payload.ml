@@ -208,3 +208,15 @@ module Thread_members_update = struct
   let member_count (t : t) : int = t.member_count
   let thread (t : t) : Channel.t option = t.thread
 end
+
+module Webhooks_update = struct
+  type t = {
+    guild_id : string option;
+    channel_id : string;
+    channel : Channel.t option;
+  }
+
+  let guild_id (t : t) : string option = t.guild_id
+  let channel_id (t : t) : string = t.channel_id
+  let channel (t : t) : Channel.t option = t.channel
+end

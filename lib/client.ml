@@ -170,7 +170,10 @@ module type Client = sig
   val on_voice_channel_effect_send : t -> (t -> unit) -> unit
   val on_voice_state_update : t -> (t -> unit) -> unit
   val on_voice_server_update : t -> (t -> unit) -> unit
-  val on_webhooks_update : t -> (t -> unit) -> unit
+
+  val on_webhooks_update :
+    t -> (t -> Event_payload.Webhooks_update.t -> unit) -> unit
+
   val show : t -> string
 end
 
@@ -1099,7 +1102,8 @@ include (
           | Some channel_id ->
               { empty with channel = find_channel c channel_id }
           | None -> empty)
-      | Discord_private.P_event.Channel_pins_update -> (
+      | Discord_private.P_event.Channel_pins_update
+      | Discord_private.P_event.Webhooks_update -> (
           match json |> member "channel_id" |> to_string_option with
           | Some channel_id ->
               { empty with channel = find_channel c channel_id }
@@ -2053,8 +2057,15 @@ include (
     let on_voice_server_update (c : t) (f : t -> unit) : unit =
       add_untyped_handler c Discord_private.P_event.Voice_server_update f
 
-    let on_webhooks_update (c : t) (f : t -> unit) : unit =
-      add_untyped_handler c Discord_private.P_event.Webhooks_update f
+    let on_webhooks_update (c : t)
+        (f : t -> Event_payload.Webhooks_update.t -> unit) : unit =
+      add_handler c Discord_private.P_event.Webhooks_update (fun t snap json ->
+          let open Yojson.Safe.Util in
+          match json |> member "channel_id" |> to_string_option with
+          | Some channel_id ->
+              let guild_id = json |> member "guild_id" |> to_string_option in
+              f t { guild_id; channel_id; channel = snap.channel }
+          | None -> log_decode_error c "WEBHOOKS_UPDATE" "missing channel_id")
 
     let create (i : int) : t =
       {
