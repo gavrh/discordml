@@ -172,3 +172,39 @@ module Channel_pins_update = struct
   let last_pin_timestamp (t : t) : string option = t.last_pin_timestamp
   let channel (t : t) : Channel.t option = t.channel
 end
+
+module Thread_list_sync = struct
+  type t = {
+    guild_id : string;
+    channel_ids : string list;
+    threads : Channel.t list;
+    members : Thread_member.t list;
+    guild : Guild.t option;
+  }
+
+  let guild_id (t : t) : string = t.guild_id
+  let channel_ids (t : t) : string list = t.channel_ids
+  let threads (t : t) : Channel.t list = t.threads
+  let members (t : t) : Thread_member.t list = t.members
+  let guild (t : t) : Guild.t option = t.guild
+end
+
+module Thread_members_update = struct
+  type t = {
+    thread_id : string;
+    guild_id : string option;
+    added : Thread_member.t list;
+    removed : Thread_member.t list;
+    removed_user_ids : string list;
+    member_count : int;
+    thread : Channel.t option;
+  }
+
+  let thread_id (t : t) : string = t.thread_id
+  let guild_id (t : t) : string option = t.guild_id
+  let added (t : t) : Thread_member.t list = t.added
+  let removed (t : t) : Thread_member.t list = t.removed
+  let removed_user_ids (t : t) : string list = t.removed_user_ids
+  let member_count (t : t) : int = t.member_count
+  let thread (t : t) : Channel.t option = t.thread
+end
