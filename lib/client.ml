@@ -126,8 +126,13 @@ module type Client = sig
   val on_integration_update : t -> (t -> unit) -> unit
   val on_integration_delete : t -> (t -> unit) -> unit
   val on_interaction_create : t -> (t -> unit) -> unit
-  val on_invite_create : t -> (t -> Invite.t -> unit) -> unit
-  val on_invite_delete : t -> (t -> Invite.t -> unit) -> unit
+
+  val on_invite_create :
+    t -> (t -> Event_payload.Invite_create.t -> unit) -> unit
+
+  val on_invite_delete :
+    t -> (t -> Event_payload.Invite_delete.t -> unit) -> unit
+
   val on_message : t -> (t -> Message.t -> unit) -> unit
 
   val on_message_update :
@@ -1949,13 +1954,40 @@ include (
     let on_interaction_create (c : t) (f : t -> unit) : unit =
       add_untyped_handler c Discord_private.P_event.Interaction_create f
 
-    let on_invite_create (c : t) (f : t -> Invite.t -> unit) : unit =
-      add_decoded_handler c Discord_private.P_event.Invite_create
-        Invite.of_yojson f
+    let on_invite_create (c : t)
+        (f : t -> Event_payload.Invite_create.t -> unit) : unit =
+      add_handler c Discord_private.P_event.Invite_create (fun t _ json ->
+          let open Yojson.Safe.Util in
+          match
+            ( json |> member "code" |> to_string_option,
+              json |> member "channel_id" |> to_string_option )
+          with
+          | Some code, Some channel_id ->
+              let guild_id = json |> member "guild_id" |> to_string_option in
+              let invite =
+                match Invite.of_yojson json with
+                | Ok invite -> Some invite
+                | Error msg ->
+                    log_decode_error c "INVITE_CREATE" msg;
+                    None
+              in
+              f t { code; channel_id; guild_id; invite }
+          | None, _ -> log_decode_error c "INVITE_CREATE" "missing code"
+          | _, None -> log_decode_error c "INVITE_CREATE" "missing channel_id")
 
-    let on_invite_delete (c : t) (f : t -> Invite.t -> unit) : unit =
-      add_decoded_handler c Discord_private.P_event.Invite_delete
-        Invite.of_yojson f
+    let on_invite_delete (c : t)
+        (f : t -> Event_payload.Invite_delete.t -> unit) : unit =
+      add_handler c Discord_private.P_event.Invite_delete (fun t _ json ->
+          let open Yojson.Safe.Util in
+          match
+            ( json |> member "code" |> to_string_option,
+              json |> member "channel_id" |> to_string_option )
+          with
+          | Some code, Some channel_id ->
+              let guild_id = json |> member "guild_id" |> to_string_option in
+              f t { code; channel_id; guild_id }
+          | None, _ -> log_decode_error c "INVITE_DELETE" "missing code"
+          | _, None -> log_decode_error c "INVITE_DELETE" "missing channel_id")
 
     let on_message (c : t) (f : t -> Message.t -> unit) : unit =
       add_message_handler c f

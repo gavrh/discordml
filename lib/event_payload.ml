@@ -220,3 +220,25 @@ module Webhooks_update = struct
   let channel_id (t : t) : string = t.channel_id
   let channel (t : t) : Channel.t option = t.channel
 end
+
+module Invite_create = struct
+  type t = {
+    code : string;
+    channel_id : string;
+    guild_id : string option;
+    invite : Invite.t option;
+  }
+
+  let code (t : t) : string = t.code
+  let channel_id (t : t) : string = t.channel_id
+  let guild_id (t : t) : string option = t.guild_id
+  let invite (t : t) : Invite.t option = t.invite
+end
+
+module Invite_delete = struct
+  type t = { code : string; channel_id : string; guild_id : string option }
+
+  let code (t : t) : string = t.code
+  let channel_id (t : t) : string = t.channel_id
+  let guild_id (t : t) : string option = t.guild_id
+end
