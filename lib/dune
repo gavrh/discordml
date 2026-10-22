@@ -27,6 +27,7 @@
   message_activity
   message_update
   p_http
+  p_message_update
   p_rate_limit
   permission
   poll

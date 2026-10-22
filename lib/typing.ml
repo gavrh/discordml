@@ -13,7 +13,6 @@ module type Typing = sig
   val timestamp : t -> string option
   val member : t -> Member.t option
   val of_yojson : Yojson.Safe.t -> (t, string) result
-  val with_member : t -> Member.t -> t
 end
 
 include (
@@ -61,8 +60,5 @@ include (
       with
       | Type_error (msg, _) -> Error msg
       | Undefined (msg, _) -> Error msg
-
-    let with_member (t : t) (member : Member.t) : t =
-      { t with member = Some member }
   end :
     Typing)
