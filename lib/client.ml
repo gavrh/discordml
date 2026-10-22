@@ -848,6 +848,28 @@ include (
           | Some guild_id, Some rule_id ->
               remove_auto_moderation_rule c guild_id rule_id
           | _ -> ())
+      | Discord_private.P_event.Thread_list_sync -> (
+          (match json |> member "threads" with
+          | `List threads ->
+              List.iter
+                (fun thread_json ->
+                  match Channel.of_yojson thread_json with
+                  | Ok channel -> put_channel c channel
+                  | Error msg -> log_decode_error c name msg)
+                threads
+          | _ -> ());
+          match json |> member "members" with
+          | `List members ->
+              List.iter
+                (fun member_json ->
+                  match Thread_member.of_yojson member_json with
+                  | Ok tm -> (
+                      match Thread_member.id tm with
+                      | Some thread_id -> put_thread_member c thread_id tm
+                      | None -> ())
+                  | Error msg -> log_decode_error c name msg)
+                members
+          | _ -> ())
       | Discord_private.P_event.Thread_member_update -> (
           match Thread_member.of_yojson json with
           | Ok tm -> (
