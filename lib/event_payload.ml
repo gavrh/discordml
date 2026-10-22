@@ -144,3 +144,101 @@ module Guild_members_chunk = struct
   let nonce (t : t) : string option = t.nonce
   let not_found (t : t) : string list = t.not_found
 end
+
+module Channel_delete = struct
+  type t = {
+    id : string;
+    guild_id : string option;
+    type_ : int option;
+    channel : Channel.t option;
+  }
+
+  let id (t : t) : string = t.id
+  let guild_id (t : t) : string option = t.guild_id
+  let type_ (t : t) : int option = t.type_
+  let channel (t : t) : Channel.t option = t.channel
+end
+
+module Channel_pins_update = struct
+  type t = {
+    channel_id : string;
+    guild_id : string option;
+    last_pin_timestamp : string option;
+    channel : Channel.t option;
+  }
+
+  let channel_id (t : t) : string = t.channel_id
+  let guild_id (t : t) : string option = t.guild_id
+  let last_pin_timestamp (t : t) : string option = t.last_pin_timestamp
+  let channel (t : t) : Channel.t option = t.channel
+end
+
+module Thread_list_sync = struct
+  type t = {
+    guild_id : string;
+    channel_ids : string list;
+    threads : Channel.t list;
+    members : Thread_member.t list;
+    guild : Guild.t option;
+  }
+
+  let guild_id (t : t) : string = t.guild_id
+  let channel_ids (t : t) : string list = t.channel_ids
+  let threads (t : t) : Channel.t list = t.threads
+  let members (t : t) : Thread_member.t list = t.members
+  let guild (t : t) : Guild.t option = t.guild
+end
+
+module Thread_members_update = struct
+  type t = {
+    thread_id : string;
+    guild_id : string option;
+    added : Thread_member.t list;
+    removed : Thread_member.t list;
+    removed_user_ids : string list;
+    member_count : int;
+    thread : Channel.t option;
+  }
+
+  let thread_id (t : t) : string = t.thread_id
+  let guild_id (t : t) : string option = t.guild_id
+  let added (t : t) : Thread_member.t list = t.added
+  let removed (t : t) : Thread_member.t list = t.removed
+  let removed_user_ids (t : t) : string list = t.removed_user_ids
+  let member_count (t : t) : int = t.member_count
+  let thread (t : t) : Channel.t option = t.thread
+end
+
+module Webhooks_update = struct
+  type t = {
+    guild_id : string option;
+    channel_id : string;
+    channel : Channel.t option;
+  }
+
+  let guild_id (t : t) : string option = t.guild_id
+  let channel_id (t : t) : string = t.channel_id
+  let channel (t : t) : Channel.t option = t.channel
+end
+
+module Invite_create = struct
+  type t = {
+    code : string;
+    channel_id : string;
+    guild_id : string option;
+    invite : Invite.t option;
+  }
+
+  let code (t : t) : string = t.code
+  let channel_id (t : t) : string = t.channel_id
+  let guild_id (t : t) : string option = t.guild_id
+  let invite (t : t) : Invite.t option = t.invite
+end
+
+module Invite_delete = struct
+  type t = { code : string; channel_id : string; guild_id : string option }
+
+  let code (t : t) : string = t.code
+  let channel_id (t : t) : string = t.channel_id
+  let guild_id (t : t) : string option = t.guild_id
+end

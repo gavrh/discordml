@@ -41,17 +41,34 @@ module type Client = sig
   val on_auto_moderation_rule_update : t -> (t -> unit) -> unit
   val on_auto_moderation_rule_delete : t -> (t -> unit) -> unit
   val on_auto_moderation_action_execution : t -> (t -> unit) -> unit
-  val on_channel_create : t -> (t -> unit) -> unit
-  val on_channel_update : t -> (t -> unit) -> unit
-  val on_channel_delete : t -> (t -> unit) -> unit
-  val on_channel_info : t -> (t -> unit) -> unit
-  val on_channel_pins_update : t -> (t -> unit) -> unit
-  val on_thread_create : t -> (t -> unit) -> unit
-  val on_thread_update : t -> (t -> unit) -> unit
-  val on_thread_delete : t -> (t -> unit) -> unit
-  val on_thread_list_sync : t -> (t -> unit) -> unit
-  val on_thread_member_update : t -> (t -> unit) -> unit
-  val on_thread_members_update : t -> (t -> unit) -> unit
+  val on_channel_create : t -> (t -> Channel.t -> unit) -> unit
+
+  val on_channel_update :
+    t -> (t -> Channel.t option -> Channel.t -> unit) -> unit
+
+  val on_channel_delete :
+    t -> (t -> Event_payload.Channel_delete.t -> unit) -> unit
+
+  val on_channel_pins_update :
+    t -> (t -> Event_payload.Channel_pins_update.t -> unit) -> unit
+
+  val on_thread_create : t -> (t -> Channel.t -> bool -> unit) -> unit
+
+  val on_thread_update :
+    t -> (t -> Channel.t option -> Channel.t -> unit) -> unit
+
+  val on_thread_delete :
+    t -> (t -> Event_payload.Channel_delete.t -> unit) -> unit
+
+  val on_thread_list_sync :
+    t -> (t -> Event_payload.Thread_list_sync.t -> unit) -> unit
+
+  val on_thread_member_update :
+    t -> (t -> Thread_member.t option -> Thread_member.t -> unit) -> unit
+
+  val on_thread_members_update :
+    t -> (t -> Event_payload.Thread_members_update.t -> unit) -> unit
+
   val on_voice_channel_status_update : t -> (t -> unit) -> unit
   val on_voice_channel_start_time_update : t -> (t -> unit) -> unit
   val on_entitlement_create : t -> (t -> unit) -> unit
@@ -109,8 +126,13 @@ module type Client = sig
   val on_integration_update : t -> (t -> unit) -> unit
   val on_integration_delete : t -> (t -> unit) -> unit
   val on_interaction_create : t -> (t -> unit) -> unit
-  val on_invite_create : t -> (t -> unit) -> unit
-  val on_invite_delete : t -> (t -> unit) -> unit
+
+  val on_invite_create :
+    t -> (t -> Event_payload.Invite_create.t -> unit) -> unit
+
+  val on_invite_delete :
+    t -> (t -> Event_payload.Invite_delete.t -> unit) -> unit
+
   val on_message : t -> (t -> Message.t -> unit) -> unit
 
   val on_message_update :
@@ -140,16 +162,21 @@ module type Client = sig
   val on_message_poll_vote_remove :
     t -> (t -> Event_payload.Message_poll_vote.t -> unit) -> unit
 
-  val on_presence_update : t -> (t -> unit) -> unit
+  val on_presence_update :
+    t -> (t -> Presence.t option -> Presence.t -> unit) -> unit
+
   val on_stage_instance_create : t -> (t -> unit) -> unit
   val on_stage_instance_update : t -> (t -> unit) -> unit
   val on_stage_instance_delete : t -> (t -> unit) -> unit
   val on_typing_start : t -> (t -> Typing.t -> unit) -> unit
-  val on_user_update : t -> (t -> unit) -> unit
+  val on_user_update : t -> (t -> User.t option -> User.t -> unit) -> unit
   val on_voice_channel_effect_send : t -> (t -> unit) -> unit
   val on_voice_state_update : t -> (t -> unit) -> unit
   val on_voice_server_update : t -> (t -> unit) -> unit
-  val on_webhooks_update : t -> (t -> unit) -> unit
+
+  val on_webhooks_update :
+    t -> (t -> Event_payload.Webhooks_update.t -> unit) -> unit
+
   val show : t -> string
 end
 
@@ -163,6 +190,7 @@ include (
       role : Role.t option;
       user : User.t option;
       thread_member : Thread_member.t option;
+      thread_members : Thread_member.t list;
       emojis : Emoji.t list;
       stickers : Sticker.t list;
     }
@@ -823,6 +851,28 @@ include (
           | Some guild_id, Some rule_id ->
               remove_auto_moderation_rule c guild_id rule_id
           | _ -> ())
+      | Discord_private.P_event.Thread_list_sync -> (
+          (match json |> member "threads" with
+          | `List threads ->
+              List.iter
+                (fun thread_json ->
+                  match Channel.of_yojson thread_json with
+                  | Ok channel -> put_channel c channel
+                  | Error msg -> log_decode_error c name msg)
+                threads
+          | _ -> ());
+          match json |> member "members" with
+          | `List members ->
+              List.iter
+                (fun member_json ->
+                  match Thread_member.of_yojson member_json with
+                  | Ok tm -> (
+                      match Thread_member.id tm with
+                      | Some thread_id -> put_thread_member c thread_id tm
+                      | None -> ())
+                  | Error msg -> log_decode_error c name msg)
+                members
+          | _ -> ())
       | Discord_private.P_event.Thread_member_update -> (
           match Thread_member.of_yojson json with
           | Ok tm -> (
@@ -997,6 +1047,11 @@ include (
     let snapshot_event (c : t) (event : Discord_private.P_event.t)
         (json : Yojson.Safe.t) : snapshot =
       let find_member = member in
+      let find_channel = channel in
+      let find_guild = guild in
+      let find_presence = presence in
+      let find_user = user_by_id in
+      let find_thread_member = thread_member in
       let open Yojson.Safe.Util in
       let empty =
         {
@@ -1007,13 +1062,14 @@ include (
           role = None;
           user = None;
           thread_member = None;
+          thread_members = [];
           emojis = [];
           stickers = [];
         }
       in
       let with_guild guild_id =
         match guild_id with
-        | Some guild_id -> { empty with guild = guild c guild_id }
+        | Some guild_id -> { empty with guild = find_guild c guild_id }
         | None -> empty
       in
       match event with
@@ -1062,6 +1118,55 @@ include (
               | Some g ->
                   { empty with guild = Some g; stickers = Guild.stickers g }
               | None -> empty)
+          | None -> empty)
+      | Discord_private.P_event.Channel_update
+      | Discord_private.P_event.Channel_delete
+      | Discord_private.P_event.Thread_update
+      | Discord_private.P_event.Thread_delete -> (
+          match json |> member "id" |> to_string_option with
+          | Some channel_id ->
+              { empty with channel = find_channel c channel_id }
+          | None -> empty)
+      | Discord_private.P_event.Channel_pins_update
+      | Discord_private.P_event.Webhooks_update -> (
+          match json |> member "channel_id" |> to_string_option with
+          | Some channel_id ->
+              { empty with channel = find_channel c channel_id }
+          | None -> empty)
+      | Discord_private.P_event.Thread_list_sync ->
+          with_guild (json |> member "guild_id" |> to_string_option)
+      | Discord_private.P_event.Thread_member_update -> (
+          match
+            ( json |> member "id" |> to_string_option,
+              json |> member "user_id" |> to_string_option )
+          with
+          | Some thread_id, Some user_id ->
+              {
+                empty with
+                thread_member = find_thread_member c ~thread_id ~user_id;
+              }
+          | _ -> empty)
+      | Discord_private.P_event.Thread_members_update -> (
+          match json |> member "id" |> to_string_option with
+          | Some thread_id ->
+              let thread_members =
+                string_list (json |> member "removed_member_ids")
+                |> List.filter_map (fun user_id ->
+                    find_thread_member c ~thread_id ~user_id)
+              in
+              { empty with channel = find_channel c thread_id; thread_members }
+          | None -> empty)
+      | Discord_private.P_event.Presence_update -> (
+          match
+            ( json |> member "guild_id" |> to_string_option,
+              json |> member "user" |> member "id" |> to_string_option )
+          with
+          | Some guild_id, Some user_id ->
+              { empty with presence = find_presence c ~guild_id ~user_id }
+          | _ -> empty)
+      | Discord_private.P_event.User_update -> (
+          match json |> member "id" |> to_string_option with
+          | Some user_id -> { empty with user = find_user c user_id }
           | None -> empty)
       | _ -> empty
 
@@ -1435,38 +1540,136 @@ include (
       add_untyped_handler c
         Discord_private.P_event.Auto_moderation_action_execution f
 
-    let on_channel_create (c : t) (f : t -> unit) : unit =
-      add_untyped_handler c Discord_private.P_event.Channel_create f
+    let on_channel_create (c : t) (f : t -> Channel.t -> unit) : unit =
+      add_decoded_handler c Discord_private.P_event.Channel_create
+        Channel.of_yojson f
 
-    let on_channel_update (c : t) (f : t -> unit) : unit =
-      add_untyped_handler c Discord_private.P_event.Channel_update f
+    let on_channel_update (c : t)
+        (f : t -> Channel.t option -> Channel.t -> unit) : unit =
+      add_handler c Discord_private.P_event.Channel_update (fun t snap json ->
+          match Channel.of_yojson json with
+          | Ok channel -> f t snap.channel channel
+          | Error msg -> log_decode_error c "CHANNEL_UPDATE" msg)
 
-    let on_channel_delete (c : t) (f : t -> unit) : unit =
-      add_untyped_handler c Discord_private.P_event.Channel_delete f
+    let on_channel_delete (c : t)
+        (f : t -> Event_payload.Channel_delete.t -> unit) : unit =
+      add_handler c Discord_private.P_event.Channel_delete (fun t snap json ->
+          let open Yojson.Safe.Util in
+          match json |> member "id" |> to_string_option with
+          | Some id ->
+              let guild_id = json |> member "guild_id" |> to_string_option in
+              let type_ = json |> member "type" |> to_int_option in
+              f t { id; guild_id; type_; channel = snap.channel }
+          | None -> log_decode_error c "CHANNEL_DELETE" "missing id")
 
-    let on_channel_info (c : t) (f : t -> unit) : unit =
-      add_untyped_handler c Discord_private.P_event.Channel_info f
+    let on_channel_pins_update (c : t)
+        (f : t -> Event_payload.Channel_pins_update.t -> unit) : unit =
+      add_handler c Discord_private.P_event.Channel_pins_update
+        (fun t snap json ->
+          let open Yojson.Safe.Util in
+          match json |> member "channel_id" |> to_string_option with
+          | Some channel_id ->
+              let guild_id = json |> member "guild_id" |> to_string_option in
+              let last_pin_timestamp =
+                json |> member "last_pin_timestamp" |> to_string_option
+              in
+              f t
+                {
+                  channel_id;
+                  guild_id;
+                  last_pin_timestamp;
+                  channel = snap.channel;
+                }
+          | None ->
+              log_decode_error c "CHANNEL_PINS_UPDATE" "missing channel_id")
 
-    let on_channel_pins_update (c : t) (f : t -> unit) : unit =
-      add_untyped_handler c Discord_private.P_event.Channel_pins_update f
+    let on_thread_create (c : t) (f : t -> Channel.t -> bool -> unit) : unit =
+      add_handler c Discord_private.P_event.Thread_create (fun t _ json ->
+          match Channel.of_yojson json with
+          | Ok channel ->
+              let open Yojson.Safe.Util in
+              let newly_created =
+                json |> member "newly_created" |> to_bool_option
+                |> Option.value ~default:false
+              in
+              f t channel newly_created
+          | Error msg -> log_decode_error c "THREAD_CREATE" msg)
 
-    let on_thread_create (c : t) (f : t -> unit) : unit =
-      add_untyped_handler c Discord_private.P_event.Thread_create f
+    let on_thread_update (c : t)
+        (f : t -> Channel.t option -> Channel.t -> unit) : unit =
+      add_handler c Discord_private.P_event.Thread_update (fun t snap json ->
+          match Channel.of_yojson json with
+          | Ok channel -> f t snap.channel channel
+          | Error msg -> log_decode_error c "THREAD_UPDATE" msg)
 
-    let on_thread_update (c : t) (f : t -> unit) : unit =
-      add_untyped_handler c Discord_private.P_event.Thread_update f
+    let on_thread_delete (c : t)
+        (f : t -> Event_payload.Channel_delete.t -> unit) : unit =
+      add_handler c Discord_private.P_event.Thread_delete (fun t snap json ->
+          let open Yojson.Safe.Util in
+          match json |> member "id" |> to_string_option with
+          | Some id ->
+              let guild_id = json |> member "guild_id" |> to_string_option in
+              let type_ = json |> member "type" |> to_int_option in
+              f t { id; guild_id; type_; channel = snap.channel }
+          | None -> log_decode_error c "THREAD_DELETE" "missing id")
 
-    let on_thread_delete (c : t) (f : t -> unit) : unit =
-      add_untyped_handler c Discord_private.P_event.Thread_delete f
+    let on_thread_list_sync (c : t)
+        (f : t -> Event_payload.Thread_list_sync.t -> unit) : unit =
+      add_handler c Discord_private.P_event.Thread_list_sync (fun t snap json ->
+          let open Yojson.Safe.Util in
+          match json |> member "guild_id" |> to_string_option with
+          | Some guild_id ->
+              let channel_ids = string_list (json |> member "channel_ids") in
+              let threads =
+                decode_list c "THREAD_LIST_SYNC" Channel.of_yojson json
+                  "threads"
+              in
+              let members =
+                decode_list c "THREAD_LIST_SYNC" Thread_member.of_yojson json
+                  "members"
+              in
+              f t
+                { guild_id; channel_ids; threads; members; guild = snap.guild }
+          | None -> log_decode_error c "THREAD_LIST_SYNC" "missing guild_id")
 
-    let on_thread_list_sync (c : t) (f : t -> unit) : unit =
-      add_untyped_handler c Discord_private.P_event.Thread_list_sync f
+    let on_thread_member_update (c : t)
+        (f : t -> Thread_member.t option -> Thread_member.t -> unit) : unit =
+      add_handler c Discord_private.P_event.Thread_member_update
+        (fun t snap json ->
+          match Thread_member.of_yojson json with
+          | Ok thread_member -> f t snap.thread_member thread_member
+          | Error msg -> log_decode_error c "THREAD_MEMBER_UPDATE" msg)
 
-    let on_thread_member_update (c : t) (f : t -> unit) : unit =
-      add_untyped_handler c Discord_private.P_event.Thread_member_update f
-
-    let on_thread_members_update (c : t) (f : t -> unit) : unit =
-      add_untyped_handler c Discord_private.P_event.Thread_members_update f
+    let on_thread_members_update (c : t)
+        (f : t -> Event_payload.Thread_members_update.t -> unit) : unit =
+      add_handler c Discord_private.P_event.Thread_members_update
+        (fun t snap json ->
+          let open Yojson.Safe.Util in
+          match json |> member "id" |> to_string_option with
+          | Some thread_id ->
+              let guild_id = json |> member "guild_id" |> to_string_option in
+              let added =
+                decode_list c "THREAD_MEMBERS_UPDATE" Thread_member.of_yojson
+                  json "added_members"
+              in
+              let removed_user_ids =
+                string_list (json |> member "removed_member_ids")
+              in
+              let member_count =
+                json |> member "member_count" |> to_int_option
+                |> Option.value ~default:0
+              in
+              f t
+                {
+                  thread_id;
+                  guild_id;
+                  added;
+                  removed = snap.thread_members;
+                  removed_user_ids;
+                  member_count;
+                  thread = snap.channel;
+                }
+          | None -> log_decode_error c "THREAD_MEMBERS_UPDATE" "missing id")
 
     let on_voice_channel_status_update (c : t) (f : t -> unit) : unit =
       add_untyped_handler c Discord_private.P_event.Voice_channel_status_update
@@ -1751,11 +1954,40 @@ include (
     let on_interaction_create (c : t) (f : t -> unit) : unit =
       add_untyped_handler c Discord_private.P_event.Interaction_create f
 
-    let on_invite_create (c : t) (f : t -> unit) : unit =
-      add_untyped_handler c Discord_private.P_event.Invite_create f
+    let on_invite_create (c : t)
+        (f : t -> Event_payload.Invite_create.t -> unit) : unit =
+      add_handler c Discord_private.P_event.Invite_create (fun t _ json ->
+          let open Yojson.Safe.Util in
+          match
+            ( json |> member "code" |> to_string_option,
+              json |> member "channel_id" |> to_string_option )
+          with
+          | Some code, Some channel_id ->
+              let guild_id = json |> member "guild_id" |> to_string_option in
+              let invite =
+                match Invite.of_yojson json with
+                | Ok invite -> Some invite
+                | Error msg ->
+                    log_decode_error c "INVITE_CREATE" msg;
+                    None
+              in
+              f t { code; channel_id; guild_id; invite }
+          | None, _ -> log_decode_error c "INVITE_CREATE" "missing code"
+          | _, None -> log_decode_error c "INVITE_CREATE" "missing channel_id")
 
-    let on_invite_delete (c : t) (f : t -> unit) : unit =
-      add_untyped_handler c Discord_private.P_event.Invite_delete f
+    let on_invite_delete (c : t)
+        (f : t -> Event_payload.Invite_delete.t -> unit) : unit =
+      add_handler c Discord_private.P_event.Invite_delete (fun t _ json ->
+          let open Yojson.Safe.Util in
+          match
+            ( json |> member "code" |> to_string_option,
+              json |> member "channel_id" |> to_string_option )
+          with
+          | Some code, Some channel_id ->
+              let guild_id = json |> member "guild_id" |> to_string_option in
+              f t { code; channel_id; guild_id }
+          | None, _ -> log_decode_error c "INVITE_DELETE" "missing code"
+          | _, None -> log_decode_error c "INVITE_DELETE" "missing channel_id")
 
     let on_message (c : t) (f : t -> Message.t -> unit) : unit =
       add_message_handler c f
@@ -1826,8 +2058,12 @@ include (
           | Ok payload -> f t payload
           | Error msg -> log_decode_error c "MESSAGE_POLL_VOTE_REMOVE" msg)
 
-    let on_presence_update (c : t) (f : t -> unit) : unit =
-      add_untyped_handler c Discord_private.P_event.Presence_update f
+    let on_presence_update (c : t)
+        (f : t -> Presence.t option -> Presence.t -> unit) : unit =
+      add_handler c Discord_private.P_event.Presence_update (fun t snap json ->
+          match Presence.of_yojson json with
+          | Ok presence -> f t snap.presence presence
+          | Error msg -> log_decode_error c "PRESENCE_UPDATE" msg)
 
     let on_stage_instance_create (c : t) (f : t -> unit) : unit =
       add_untyped_handler c Discord_private.P_event.Stage_instance_create f
@@ -1854,8 +2090,12 @@ include (
           | None -> ());
           f t typing)
 
-    let on_user_update (c : t) (f : t -> unit) : unit =
-      add_untyped_handler c Discord_private.P_event.User_update f
+    let on_user_update (c : t) (f : t -> User.t option -> User.t -> unit) : unit
+        =
+      add_handler c Discord_private.P_event.User_update (fun t snap json ->
+          match User.of_yojson json with
+          | Ok user -> f t snap.user user
+          | Error msg -> log_decode_error c "USER_UPDATE" msg)
 
     let on_voice_channel_effect_send (c : t) (f : t -> unit) : unit =
       add_untyped_handler c Discord_private.P_event.Voice_channel_effect_send f
@@ -1866,8 +2106,15 @@ include (
     let on_voice_server_update (c : t) (f : t -> unit) : unit =
       add_untyped_handler c Discord_private.P_event.Voice_server_update f
 
-    let on_webhooks_update (c : t) (f : t -> unit) : unit =
-      add_untyped_handler c Discord_private.P_event.Webhooks_update f
+    let on_webhooks_update (c : t)
+        (f : t -> Event_payload.Webhooks_update.t -> unit) : unit =
+      add_handler c Discord_private.P_event.Webhooks_update (fun t snap json ->
+          let open Yojson.Safe.Util in
+          match json |> member "channel_id" |> to_string_option with
+          | Some channel_id ->
+              let guild_id = json |> member "guild_id" |> to_string_option in
+              f t { guild_id; channel_id; channel = snap.channel }
+          | None -> log_decode_error c "WEBHOOKS_UPDATE" "missing channel_id")
 
     let create (i : int) : t =
       {
