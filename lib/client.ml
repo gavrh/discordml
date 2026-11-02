@@ -734,6 +734,30 @@ include (
           List.filter_map (function `String s -> Some s | _ -> None) l
       | _ -> []
 
+    let decode_list (c : t) (name : string)
+        (of_yojson : Yojson.Safe.t -> ('a, string) result)
+        (json : Yojson.Safe.t) (field : string) : 'a list =
+      let open Yojson.Safe.Util in
+      match json |> member field with
+      | `List items ->
+          List.filter_map
+            (fun item ->
+              match of_yojson item with
+              | Ok value -> Some value
+              | Error msg ->
+                  log_decode_error c name msg;
+                  None)
+            items
+      | _ -> []
+
+    let decode_list_opt (c : t) (name : string)
+        (of_yojson : Yojson.Safe.t -> ('a, string) result)
+        (json : Yojson.Safe.t) (field : string) : 'a list option =
+      let open Yojson.Safe.Util in
+      match json |> member field with
+      | `List _ -> Some (decode_list c name of_yojson json field)
+      | _ -> None
+
     let cache_event (c : t) (event : Discord_private.P_event.t)
         (json : Yojson.Safe.t) : unit =
       let open Yojson.Safe.Util in
@@ -742,19 +766,6 @@ include (
         match of_yojson json with
         | Ok v -> on_ok v
         | Error msg -> log_decode_error c name msg
-      in
-      let decode_items of_yojson field =
-        match json |> member field with
-        | `List items ->
-            List.filter_map
-              (fun item ->
-                match of_yojson item with
-                | Ok v -> Some v
-                | Error msg ->
-                    log_decode_error c name msg;
-                    None)
-              items
-        | _ -> []
       in
       let cache_guild (g : Guild.t) : unit =
         let guild_id = Guild.id g in
@@ -821,25 +832,30 @@ include (
           match json |> member "guild_id" |> to_string_option with
           | Some guild_id -> (
               match guild c guild_id with
-              | Some g ->
-                  let g =
-                    Guild.with_emojis g (decode_items Emoji.of_yojson "emojis")
-                  in
-                  Eio.Mutex.use_rw ~protect:true c.guilds_mutex (fun () ->
-                      Hashtbl.replace c.guilds guild_id g)
+              | Some g -> (
+                  match
+                    decode_list_opt c name Emoji.of_yojson json "emojis"
+                  with
+                  | Some emojis ->
+                      let g = Guild.with_emojis g emojis in
+                      Eio.Mutex.use_rw ~protect:true c.guilds_mutex (fun () ->
+                          Hashtbl.replace c.guilds guild_id g)
+                  | None -> ())
               | None -> ())
           | None -> ())
       | Discord_private.P_event.Guild_stickers_update -> (
           match json |> member "guild_id" |> to_string_option with
           | Some guild_id -> (
               match guild c guild_id with
-              | Some g ->
-                  let g =
-                    Guild.with_stickers g
-                      (decode_items Sticker.of_yojson "stickers")
-                  in
-                  Eio.Mutex.use_rw ~protect:true c.guilds_mutex (fun () ->
-                      Hashtbl.replace c.guilds guild_id g)
+              | Some g -> (
+                  match
+                    decode_list_opt c name Sticker.of_yojson json "stickers"
+                  with
+                  | Some stickers ->
+                      let g = Guild.with_stickers g stickers in
+                      Eio.Mutex.use_rw ~protect:true c.guilds_mutex (fun () ->
+                          Hashtbl.replace c.guilds guild_id g)
+                  | None -> ())
               | None -> ())
           | None -> ())
       | Discord_private.P_event.Channel_create
@@ -1699,22 +1715,6 @@ include (
           | Ok payload -> f t payload
           | Error msg ->
               log_decode_error c (Discord_private.P_event.to_string event) msg)
-
-    let decode_list (c : t) (name : string)
-        (of_yojson : Yojson.Safe.t -> ('a, string) result)
-        (json : Yojson.Safe.t) (field : string) : 'a list =
-      let open Yojson.Safe.Util in
-      match json |> member field with
-      | `List items ->
-          List.filter_map
-            (fun item ->
-              match of_yojson item with
-              | Ok value -> Some value
-              | Error msg ->
-                  log_decode_error c name msg;
-                  None)
-            items
-      | _ -> []
 
     let add_message_handler (c : t) (f : t -> Message.t -> unit) : unit =
       let rec add () =
@@ -2753,21 +2753,25 @@ include (
                     guild_id
             | Discord_private.P_event.Guild_emojis_update -> (
                 match json |> member "guild_id" |> to_string_option with
-                | Some guild_id ->
-                    let current =
-                      decode_list c "GUILD_EMOJIS_UPDATE" Emoji.of_yojson json
-                        "emojis"
-                    in
-                    dispatch_emoji_diff ~sw c ~old:snap.emojis ~current
+                | Some _ -> (
+                    match
+                      decode_list_opt c "GUILD_EMOJIS_UPDATE" Emoji.of_yojson
+                        json "emojis"
+                    with
+                    | Some current ->
+                        dispatch_emoji_diff ~sw c ~old:snap.emojis ~current
+                    | None -> ())
                 | None -> ())
             | Discord_private.P_event.Guild_stickers_update -> (
                 match json |> member "guild_id" |> to_string_option with
-                | Some guild_id ->
-                    let current =
-                      decode_list c "GUILD_STICKERS_UPDATE" Sticker.of_yojson
-                        json "stickers"
-                    in
-                    dispatch_sticker_diff ~sw c ~old:snap.stickers ~current
+                | Some _ -> (
+                    match
+                      decode_list_opt c "GUILD_STICKERS_UPDATE"
+                        Sticker.of_yojson json "stickers"
+                    with
+                    | Some current ->
+                        dispatch_sticker_diff ~sw c ~old:snap.stickers ~current
+                    | None -> ())
                 | None -> ())
             | _ -> ());
             match event with
