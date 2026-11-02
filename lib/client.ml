@@ -1695,8 +1695,8 @@ include (
                                    p |> member "type" |> to_int_option
                                    |> Option.value ~default:0;
                                  permission =
-                                   Permission.of_yojson
-                                     (p |> member "permission");
+                                   p |> member "permission" |> to_bool_option
+                                   |> Option.value ~default:false;
                                }
                                 : Event_payload
                                   .Application_command_permissions_update

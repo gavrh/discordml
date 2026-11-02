@@ -244,8 +244,8 @@ module Invite_delete = struct
 end
 
 module Application_command_permissions_update = struct
-  type permission = { id : string; type_ : int; permission : Permission.t }
   type permission = { id : string; type_ : int; permission : bool }
+
   type t = {
     id : string;
     application_id : string;
@@ -259,7 +259,7 @@ module Application_command_permissions_update = struct
   let permissions (t : t) : permission list = t.permissions
   let permission_id (p : permission) : string = p.id
   let permission_type (p : permission) : int = p.type_
-  let permission_permission (p : permission) : Permission.t = p.permission
+  let permission_permission (p : permission) : bool = p.permission
 end
 
 module Auto_moderation_rule_delete = struct
