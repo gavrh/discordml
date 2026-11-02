@@ -107,6 +107,13 @@ module Guild_delete = struct
   let guild (t : t) : Guild.t option = t.guild
 end
 
+module Guild_unavailable = struct
+  type t = { id : string; guild : Guild.t option }
+
+  let id (t : t) : string = t.id
+  let guild (t : t) : Guild.t option = t.guild
+end
+
 module Role_delete = struct
   type t = { guild_id : string; role_id : string; role : Role.t option }
 

@@ -100,6 +100,11 @@ module type Client = sig
   val on_guild_audit_log_entry_create :
     t -> (t -> Event_payload.Guild_audit_log_entry.t -> unit) -> unit
 
+  val on_guild_available : t -> (t -> Guild.t -> unit) -> unit
+
+  val on_guild_unavailable :
+    t -> (t -> Event_payload.Guild_unavailable.t -> unit) -> unit
+
   val on_guild_ban_add : t -> (t -> string -> Guild_ban.t -> unit) -> unit
   val on_guild_ban_remove : t -> (t -> string -> Guild_ban.t -> unit) -> unit
 
@@ -108,6 +113,13 @@ module type Client = sig
 
   val on_guild_stickers_update :
     t -> (t -> string -> Sticker.t list -> Sticker.t list -> unit) -> unit
+
+  val on_emoji_create : t -> (t -> Emoji.t -> unit) -> unit
+  val on_emoji_update : t -> (t -> Emoji.t -> Emoji.t -> unit) -> unit
+  val on_emoji_delete : t -> (t -> Emoji.t -> unit) -> unit
+  val on_sticker_create : t -> (t -> Sticker.t -> unit) -> unit
+  val on_sticker_update : t -> (t -> Sticker.t -> Sticker.t -> unit) -> unit
+  val on_sticker_delete : t -> (t -> Sticker.t -> unit) -> unit
 
   val on_guild_integrations_update :
     t -> (t -> string -> Guild.t option -> unit) -> unit
@@ -289,6 +301,10 @@ include (
           [@printer
             fun fmt tbl -> Format.fprintf fmt "[ ...%d ]" (Hashtbl.length tbl)]
       integrations_mutex : Eio.Mutex.t; [@opaque]
+      unavailable_guilds : (string, unit) Hashtbl.t;
+          [@printer
+            fun fmt tbl -> Format.fprintf fmt "[ ...%d ]" (Hashtbl.length tbl)]
+      unavailable_guilds_mutex : Eio.Mutex.t; [@opaque]
       decode_errors : string list Atomic.t; [@opaque]
       shards : (int, Discord_private.P_shard.t) Hashtbl.t;
           [@printer
@@ -322,6 +338,21 @@ include (
       message_reaction_remove_emoji_handlers :
         (t -> Event_payload.Message_reaction_remove_emoji.t -> unit) list
         Atomic.t;
+          [@opaque]
+      emoji_create_handlers : (t -> Emoji.t -> unit) list Atomic.t; [@opaque]
+      emoji_update_handlers : (t -> Emoji.t -> Emoji.t -> unit) list Atomic.t;
+          [@opaque]
+      emoji_delete_handlers : (t -> Emoji.t -> unit) list Atomic.t; [@opaque]
+      sticker_create_handlers : (t -> Sticker.t -> unit) list Atomic.t;
+          [@opaque]
+      sticker_update_handlers :
+        (t -> Sticker.t -> Sticker.t -> unit) list Atomic.t;
+          [@opaque]
+      sticker_delete_handlers : (t -> Sticker.t -> unit) list Atomic.t;
+          [@opaque]
+      guild_available_handlers : (t -> Guild.t -> unit) list Atomic.t; [@opaque]
+      guild_unavailable_handlers :
+        (t -> Event_payload.Guild_unavailable.t -> unit) list Atomic.t;
           [@opaque]
       mutable user : User.t option;
           [@printer
@@ -703,6 +734,30 @@ include (
           List.filter_map (function `String s -> Some s | _ -> None) l
       | _ -> []
 
+    let decode_list (c : t) (name : string)
+        (of_yojson : Yojson.Safe.t -> ('a, string) result)
+        (json : Yojson.Safe.t) (field : string) : 'a list =
+      let open Yojson.Safe.Util in
+      match json |> member field with
+      | `List items ->
+          List.filter_map
+            (fun item ->
+              match of_yojson item with
+              | Ok value -> Some value
+              | Error msg ->
+                  log_decode_error c name msg;
+                  None)
+            items
+      | _ -> []
+
+    let decode_list_opt (c : t) (name : string)
+        (of_yojson : Yojson.Safe.t -> ('a, string) result)
+        (json : Yojson.Safe.t) (field : string) : 'a list option =
+      let open Yojson.Safe.Util in
+      match json |> member field with
+      | `List _ -> Some (decode_list c name of_yojson json field)
+      | _ -> None
+
     let cache_event (c : t) (event : Discord_private.P_event.t)
         (json : Yojson.Safe.t) : unit =
       let open Yojson.Safe.Util in
@@ -772,6 +827,36 @@ include (
                 let message_ids = drop_guild_messages c channel_ids in
                 drop_reactions c message_ids
               end
+          | None -> ())
+      | Discord_private.P_event.Guild_emojis_update -> (
+          match json |> member "guild_id" |> to_string_option with
+          | Some guild_id -> (
+              match guild c guild_id with
+              | Some g -> (
+                  match
+                    decode_list_opt c name Emoji.of_yojson json "emojis"
+                  with
+                  | Some emojis ->
+                      let g = Guild.with_emojis g emojis in
+                      Eio.Mutex.use_rw ~protect:true c.guilds_mutex (fun () ->
+                          Hashtbl.replace c.guilds guild_id g)
+                  | None -> ())
+              | None -> ())
+          | None -> ())
+      | Discord_private.P_event.Guild_stickers_update -> (
+          match json |> member "guild_id" |> to_string_option with
+          | Some guild_id -> (
+              match guild c guild_id with
+              | Some g -> (
+                  match
+                    decode_list_opt c name Sticker.of_yojson json "stickers"
+                  with
+                  | Some stickers ->
+                      let g = Guild.with_stickers g stickers in
+                      Eio.Mutex.use_rw ~protect:true c.guilds_mutex (fun () ->
+                          Hashtbl.replace c.guilds guild_id g)
+                  | None -> ())
+              | None -> ())
           | None -> ())
       | Discord_private.P_event.Channel_create
       | Discord_private.P_event.Channel_update ->
@@ -1162,6 +1247,7 @@ include (
         | None -> empty
       in
       match event with
+      | Discord_private.P_event.Guild_create
       | Discord_private.P_event.Guild_update
       | Discord_private.P_event.Guild_delete ->
           with_guild (json |> member "id" |> to_string_option)
@@ -1630,22 +1716,6 @@ include (
           | Error msg ->
               log_decode_error c (Discord_private.P_event.to_string event) msg)
 
-    let decode_list (c : t) (name : string)
-        (of_yojson : Yojson.Safe.t -> ('a, string) result)
-        (json : Yojson.Safe.t) (field : string) : 'a list =
-      let open Yojson.Safe.Util in
-      match json |> member field with
-      | `List items ->
-          List.filter_map
-            (fun item ->
-              match of_yojson item with
-              | Ok value -> Some value
-              | Error msg ->
-                  log_decode_error c name msg;
-                  None)
-            items
-      | _ -> []
-
     let add_message_handler (c : t) (f : t -> Message.t -> unit) : unit =
       let rec add () =
         let old = Atomic.get c.message_handlers in
@@ -1660,6 +1730,92 @@ include (
         if not (Atomic.compare_and_set r old (f :: old)) then add ()
       in
       add ()
+
+    let run_handlers ~sw (handlers : 'a list Atomic.t) (f : 'a -> unit) : unit =
+      List.iter
+        (fun handler -> Eio.Fiber.fork ~sw (fun () -> f handler))
+        (Atomic.get handlers)
+
+    let mark_unavailable (c : t) (guild_id : string) : bool =
+      Eio.Mutex.use_rw ~protect:true c.unavailable_guilds_mutex (fun () ->
+          if Hashtbl.mem c.unavailable_guilds guild_id then false
+          else begin
+            Hashtbl.replace c.unavailable_guilds guild_id ();
+            true
+          end)
+
+    let mark_available (c : t) (guild_id : string) : bool =
+      Eio.Mutex.use_rw ~protect:true c.unavailable_guilds_mutex (fun () ->
+          let was_unavailable = Hashtbl.mem c.unavailable_guilds guild_id in
+          Hashtbl.remove c.unavailable_guilds guild_id;
+          was_unavailable)
+
+    let diff ~(key : 'a -> string) ~(equal : 'a -> 'a -> bool) (old : 'a list)
+        (current : 'a list) : 'a list * ('a * 'a) list * 'a list =
+      let added =
+        List.filter
+          (fun new_item ->
+            not (List.exists (fun old_item -> key old_item = key new_item) old))
+          current
+      in
+      let updated =
+        List.filter_map
+          (fun new_item ->
+            match
+              List.find_opt (fun old_item -> key old_item = key new_item) old
+            with
+            | Some old_item when not (equal old_item new_item) ->
+                Some (old_item, new_item)
+            | _ -> None)
+          current
+      in
+      let removed =
+        List.filter
+          (fun old_item ->
+            not
+              (List.exists
+                 (fun new_item -> key new_item = key old_item)
+                 current))
+          old
+      in
+      (added, updated, removed)
+
+    let dispatch_emoji_diff ~sw (c : t) ~(old : Emoji.t list)
+        ~(current : Emoji.t list) : unit =
+      let added, updated, removed =
+        diff ~key:Emoji.identifier ~equal:Emoji.equal old current
+      in
+      List.iter
+        (fun emoji ->
+          run_handlers ~sw c.emoji_create_handlers (fun f -> f c emoji))
+        added;
+      List.iter
+        (fun (previous, emoji) ->
+          run_handlers ~sw c.emoji_update_handlers (fun f -> f c previous emoji))
+        updated;
+      List.iter
+        (fun emoji ->
+          run_handlers ~sw c.emoji_delete_handlers (fun f -> f c emoji))
+        removed
+
+    let dispatch_sticker_diff ~sw (c : t) ~(old : Sticker.t list)
+        ~(current : Sticker.t list) : unit =
+      let added, updated, removed =
+        diff ~key:Sticker.id ~equal:Sticker.equal old current
+      in
+      List.iter
+        (fun sticker ->
+          run_handlers ~sw c.sticker_create_handlers (fun f -> f c sticker))
+        added;
+      List.iter
+        (fun (previous, sticker) ->
+          run_handlers ~sw c.sticker_update_handlers (fun f ->
+              f c previous sticker))
+        updated;
+      List.iter
+        (fun sticker ->
+          run_handlers ~sw c.sticker_delete_handlers (fun f -> f c sticker))
+        removed
 
     let on_ready (c : t) (f : t -> unit) : unit =
       add_untyped_handler c Discord_private.P_event.Ready f
@@ -1975,6 +2131,13 @@ include (
               log_decode_error c "GUILD_AUDIT_LOG_ENTRY_CREATE"
                 "missing guild_id")
 
+    let on_guild_available (c : t) (f : t -> Guild.t -> unit) : unit =
+      add_typed c.guild_available_handlers f
+
+    let on_guild_unavailable (c : t)
+        (f : t -> Event_payload.Guild_unavailable.t -> unit) : unit =
+      add_typed c.guild_unavailable_handlers f
+
     let on_guild_ban_add (c : t) (f : t -> string -> Guild_ban.t -> unit) : unit
         =
       add_handler c Discord_private.P_event.Guild_ban_add (fun t _ json ->
@@ -2026,6 +2189,25 @@ include (
               in
               f t guild_id snap.stickers stickers
           | None -> ())
+
+    let on_emoji_create (c : t) (f : t -> Emoji.t -> unit) : unit =
+      add_typed c.emoji_create_handlers f
+
+    let on_emoji_update (c : t) (f : t -> Emoji.t -> Emoji.t -> unit) : unit =
+      add_typed c.emoji_update_handlers f
+
+    let on_emoji_delete (c : t) (f : t -> Emoji.t -> unit) : unit =
+      add_typed c.emoji_delete_handlers f
+
+    let on_sticker_create (c : t) (f : t -> Sticker.t -> unit) : unit =
+      add_typed c.sticker_create_handlers f
+
+    let on_sticker_update (c : t) (f : t -> Sticker.t -> Sticker.t -> unit) :
+        unit =
+      add_typed c.sticker_update_handlers f
+
+    let on_sticker_delete (c : t) (f : t -> Sticker.t -> unit) : unit =
+      add_typed c.sticker_delete_handlers f
 
     let on_guild_integrations_update (c : t)
         (f : t -> string -> Guild.t option -> unit) : unit =
@@ -2455,6 +2637,8 @@ include (
         auto_moderation_rules_mutex = Eio.Mutex.create ();
         integrations = Hashtbl.create 0;
         integrations_mutex = Eio.Mutex.create ();
+        unavailable_guilds = Hashtbl.create 0;
+        unavailable_guilds_mutex = Eio.Mutex.create ();
         decode_errors = Atomic.make [];
         shards = Hashtbl.create 0;
         shards_mutex = Eio.Mutex.create ();
@@ -2467,6 +2651,14 @@ include (
         message_reaction_remove_handlers = Atomic.make [];
         message_reaction_remove_all_handlers = Atomic.make [];
         message_reaction_remove_emoji_handlers = Atomic.make [];
+        emoji_create_handlers = Atomic.make [];
+        emoji_update_handlers = Atomic.make [];
+        emoji_delete_handlers = Atomic.make [];
+        sticker_create_handlers = Atomic.make [];
+        sticker_update_handlers = Atomic.make [];
+        sticker_delete_handlers = Atomic.make [];
+        guild_available_handlers = Atomic.make [];
+        guild_unavailable_handlers = Atomic.make [];
         user = None;
         rest = None;
       }
@@ -2519,10 +2711,71 @@ include (
                 | Ok user -> c.user <- Some user
                 | Error _ -> ())
             | _ -> ());
+            let unavailable =
+              json |> member "unavailable" |> to_bool_option
+              |> Option.value ~default:false
+            in
+            let guild_id = json |> member "id" |> to_string_option in
+            let emit_unavailable guild_id =
+              let payload : Event_payload.Guild_unavailable.t =
+                { id = guild_id; guild = snap.guild }
+              in
+              run_handlers ~sw c.guild_unavailable_handlers (fun f ->
+                  f c payload)
+            in
+            (match event with
+            | Discord_private.P_event.Guild_create when unavailable ->
+                Option.iter
+                  (fun guild_id ->
+                    if mark_unavailable c guild_id then
+                      emit_unavailable guild_id)
+                  guild_id
+            | Discord_private.P_event.Guild_create -> (
+                match guild_id with
+                | Some guild_id -> (
+                    if mark_available c guild_id then
+                      match guild c guild_id with
+                      | Some g ->
+                          run_handlers ~sw c.guild_available_handlers (fun f ->
+                              f c g)
+                      | None -> ())
+                | None -> ())
+            | Discord_private.P_event.Guild_delete ->
+                if unavailable then
+                  Option.iter
+                    (fun guild_id ->
+                      if mark_unavailable c guild_id then
+                        emit_unavailable guild_id)
+                    guild_id
+                else
+                  Option.iter
+                    (fun guild_id -> ignore (mark_available c guild_id))
+                    guild_id
+            | Discord_private.P_event.Guild_emojis_update -> (
+                match json |> member "guild_id" |> to_string_option with
+                | Some _ -> (
+                    match
+                      decode_list_opt c "GUILD_EMOJIS_UPDATE" Emoji.of_yojson
+                        json "emojis"
+                    with
+                    | Some current ->
+                        dispatch_emoji_diff ~sw c ~old:snap.emojis ~current
+                    | None -> ())
+                | None -> ())
+            | Discord_private.P_event.Guild_stickers_update -> (
+                match json |> member "guild_id" |> to_string_option with
+                | Some _ -> (
+                    match
+                      decode_list_opt c "GUILD_STICKERS_UPDATE"
+                        Sticker.of_yojson json "stickers"
+                    with
+                    | Some current ->
+                        dispatch_sticker_diff ~sw c ~old:snap.stickers ~current
+                    | None -> ())
+                | None -> ())
+            | _ -> ());
             match event with
-            | Discord_private.P_event.Guild_create
-              when json |> member "unavailable" |> to_bool_option = Some true ->
-                ()
+            | Discord_private.P_event.Guild_create when unavailable -> ()
             | _ ->
                 let handlers =
                   match Hashtbl.find_opt (Atomic.get c.handlers) event with
