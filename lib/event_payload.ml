@@ -353,3 +353,61 @@ module Guild_audit_log_entry = struct
   let entry (t : t) : Audit_log.entry = t.entry
   let guild (t : t) : Guild.t option = t.guild
 end
+
+module Voice_server_update = struct
+  type t = { token : string; guild_id : string; endpoint : string option }
+
+  let token (t : t) : string = t.token
+  let guild_id (t : t) : string = t.guild_id
+  let endpoint (t : t) : string option = t.endpoint
+end
+
+module Voice_channel_effect = struct
+  type t = {
+    channel_id : string;
+    guild_id : string;
+    user_id : string;
+    emoji : Emoji.t option;
+    animation_id : int option;
+    animation_type : int option;
+    sound_id : string option;
+    sound_volume : float option;
+  }
+
+  let channel_id (t : t) : string = t.channel_id
+  let guild_id (t : t) : string = t.guild_id
+  let user_id (t : t) : string = t.user_id
+  let emoji (t : t) : Emoji.t option = t.emoji
+  let animation_id (t : t) : int option = t.animation_id
+  let animation_type (t : t) : int option = t.animation_type
+  let sound_id (t : t) : string option = t.sound_id
+  let sound_volume (t : t) : float option = t.sound_volume
+end
+
+module Voice_channel_status_update = struct
+  type t = { id : string; guild_id : string option; status : string option }
+
+  let id (t : t) : string = t.id
+  let guild_id (t : t) : string option = t.guild_id
+  let status (t : t) : string option = t.status
+end
+
+module Voice_channel_start_time_update = struct
+  type t = { id : string; guild_id : string; voice_start_time : string option }
+
+  let id (t : t) : string = t.id
+  let guild_id (t : t) : string = t.guild_id
+  let voice_start_time (t : t) : string option = t.voice_start_time
+end
+
+module Guild_soundboard_sounds_update = struct
+  type t = {
+    guild_id : string;
+    sounds : Soundboard_sound.t list;
+    guild : Guild.t option;
+  }
+
+  let guild_id (t : t) : string = t.guild_id
+  let sounds (t : t) : Soundboard_sound.t list = t.sounds
+  let guild (t : t) : Guild.t option = t.guild
+end
