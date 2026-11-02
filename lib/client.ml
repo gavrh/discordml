@@ -28,6 +28,15 @@ module type Client = sig
   val integration :
     t -> guild_id:string -> integration_id:string -> Integration.t option
 
+  val voice_state :
+    t -> guild_id:string -> user_id:string -> Voice_state.t option
+
+  val entitlement : t -> string -> Entitlement.t option
+  val subscription : t -> string -> Subscription.t option
+
+  val soundboard_sound :
+    t -> guild_id:string -> sound_id:string -> Soundboard_sound.t option
+
   val user : t -> User.t option
   val rest : t -> Rest.t
   val guilds : t -> Guild.t list
@@ -85,14 +94,24 @@ module type Client = sig
   val on_thread_members_update :
     t -> (t -> Event_payload.Thread_members_update.t -> unit) -> unit
 
-  val on_voice_channel_status_update : t -> (t -> unit) -> unit
-  val on_voice_channel_start_time_update : t -> (t -> unit) -> unit
-  val on_entitlement_create : t -> (t -> unit) -> unit
-  val on_entitlement_update : t -> (t -> unit) -> unit
-  val on_entitlement_delete : t -> (t -> unit) -> unit
-  val on_subscription_create : t -> (t -> unit) -> unit
-  val on_subscription_update : t -> (t -> unit) -> unit
-  val on_subscription_delete : t -> (t -> unit) -> unit
+  val on_voice_channel_status_update :
+    t -> (t -> Event_payload.Voice_channel_status_update.t -> unit) -> unit
+
+  val on_voice_channel_start_time_update :
+    t -> (t -> Event_payload.Voice_channel_start_time_update.t -> unit) -> unit
+
+  val on_entitlement_create : t -> (t -> Entitlement.t -> unit) -> unit
+
+  val on_entitlement_update :
+    t -> (t -> Entitlement.t option -> Entitlement.t -> unit) -> unit
+
+  val on_entitlement_delete : t -> (t -> Entitlement.t -> unit) -> unit
+  val on_subscription_create : t -> (t -> Subscription.t -> unit) -> unit
+
+  val on_subscription_update :
+    t -> (t -> Subscription.t option -> Subscription.t -> unit) -> unit
+
+  val on_subscription_delete : t -> (t -> Subscription.t -> unit) -> unit
   val on_guild_create : t -> (t -> Guild.t -> unit) -> unit
   val on_guild_update : t -> (t -> Guild.t option -> Guild.t -> unit) -> unit
   val on_guild_delete : t -> (t -> Event_payload.Guild_delete.t -> unit) -> unit
@@ -160,11 +179,18 @@ module type Client = sig
   val on_guild_scheduled_event_user_remove :
     t -> (t -> Event_payload.Guild_scheduled_event_user.t -> unit) -> unit
 
-  val on_guild_soundboard_sound_create : t -> (t -> unit) -> unit
-  val on_guild_soundboard_sound_update : t -> (t -> unit) -> unit
-  val on_guild_soundboard_sound_delete : t -> (t -> unit) -> unit
-  val on_guild_soundboard_sounds_update : t -> (t -> unit) -> unit
-  val on_soundboard_sounds : t -> (t -> unit) -> unit
+  val on_guild_soundboard_sound_create :
+    t -> (t -> Soundboard_sound.t -> unit) -> unit
+
+  val on_guild_soundboard_sound_update :
+    t -> (t -> Soundboard_sound.t option -> Soundboard_sound.t -> unit) -> unit
+
+  val on_guild_soundboard_sound_delete :
+    t -> (t -> Soundboard_sound.t -> unit) -> unit
+
+  val on_guild_soundboard_sounds_update :
+    t -> (t -> Event_payload.Guild_soundboard_sounds_update.t -> unit) -> unit
+
   val on_integration_create : t -> (t -> Integration.t -> unit) -> unit
 
   val on_integration_update :
@@ -218,9 +244,15 @@ module type Client = sig
   val on_stage_instance_delete : t -> (t -> unit) -> unit
   val on_typing_start : t -> (t -> Typing.t -> unit) -> unit
   val on_user_update : t -> (t -> User.t option -> User.t -> unit) -> unit
-  val on_voice_channel_effect_send : t -> (t -> unit) -> unit
-  val on_voice_state_update : t -> (t -> unit) -> unit
-  val on_voice_server_update : t -> (t -> unit) -> unit
+
+  val on_voice_channel_effect_send :
+    t -> (t -> Event_payload.Voice_channel_effect.t -> unit) -> unit
+
+  val on_voice_state_update :
+    t -> (t -> Voice_state.t option -> Voice_state.t -> unit) -> unit
+
+  val on_voice_server_update :
+    t -> (t -> Event_payload.Voice_server_update.t -> unit) -> unit
 
   val on_webhooks_update :
     t -> (t -> Event_payload.Webhooks_update.t -> unit) -> unit
@@ -244,6 +276,10 @@ include (
       scheduled_event : Guild_scheduled_event.t option;
       auto_moderation_rule : Auto_moderation.t option;
       integration : Integration.t option;
+      voice_state : Voice_state.t option;
+      entitlement : Entitlement.t option;
+      subscription : Subscription.t option;
+      soundboard_sound : Soundboard_sound.t option;
     }
 
     type t = {
@@ -305,6 +341,22 @@ include (
           [@printer
             fun fmt tbl -> Format.fprintf fmt "[ ...%d ]" (Hashtbl.length tbl)]
       unavailable_guilds_mutex : Eio.Mutex.t; [@opaque]
+      voice_states : (string * string, Voice_state.t) Hashtbl.t;
+          [@printer
+            fun fmt tbl -> Format.fprintf fmt "[ ...%d ]" (Hashtbl.length tbl)]
+      voice_states_mutex : Eio.Mutex.t; [@opaque]
+      entitlements : (string, Entitlement.t) Hashtbl.t;
+          [@printer
+            fun fmt tbl -> Format.fprintf fmt "[ ...%d ]" (Hashtbl.length tbl)]
+      entitlements_mutex : Eio.Mutex.t; [@opaque]
+      subscriptions : (string, Subscription.t) Hashtbl.t;
+          [@printer
+            fun fmt tbl -> Format.fprintf fmt "[ ...%d ]" (Hashtbl.length tbl)]
+      subscriptions_mutex : Eio.Mutex.t; [@opaque]
+      soundboard_sounds : (string * string, Soundboard_sound.t) Hashtbl.t;
+          [@printer
+            fun fmt tbl -> Format.fprintf fmt "[ ...%d ]" (Hashtbl.length tbl)]
+      soundboard_sounds_mutex : Eio.Mutex.t; [@opaque]
       decode_errors : string list Atomic.t; [@opaque]
       shards : (int, Discord_private.P_shard.t) Hashtbl.t;
           [@printer
@@ -424,6 +476,24 @@ include (
         Integration.t option =
       Eio.Mutex.use_ro c.integrations_mutex (fun () ->
           Hashtbl.find_opt c.integrations (guild_id, integration_id))
+
+    let voice_state (c : t) ~(guild_id : string) ~(user_id : string) :
+        Voice_state.t option =
+      Eio.Mutex.use_ro c.voice_states_mutex (fun () ->
+          Hashtbl.find_opt c.voice_states (guild_id, user_id))
+
+    let entitlement (c : t) (id : string) : Entitlement.t option =
+      Eio.Mutex.use_ro c.entitlements_mutex (fun () ->
+          Hashtbl.find_opt c.entitlements id)
+
+    let subscription (c : t) (id : string) : Subscription.t option =
+      Eio.Mutex.use_ro c.subscriptions_mutex (fun () ->
+          Hashtbl.find_opt c.subscriptions id)
+
+    let soundboard_sound (c : t) ~(guild_id : string) ~(sound_id : string) :
+        Soundboard_sound.t option =
+      Eio.Mutex.use_ro c.soundboard_sounds_mutex (fun () ->
+          Hashtbl.find_opt c.soundboard_sounds (guild_id, sound_id))
 
     let user (c : t) : User.t option = c.user
 
@@ -605,6 +675,69 @@ include (
         : unit =
       Eio.Mutex.use_rw ~protect:true c.integrations_mutex (fun () ->
           Hashtbl.remove c.integrations (guild_id, integration_id))
+
+    let put_voice_state (c : t) (guild_id : string) (user_id : string)
+        (v : Voice_state.t) : unit =
+      Eio.Mutex.use_rw ~protect:true c.voice_states_mutex (fun () ->
+          Hashtbl.replace c.voice_states (guild_id, user_id) v)
+
+    let put_entitlement (c : t) (e : Entitlement.t) : unit =
+      Eio.Mutex.use_rw ~protect:true c.entitlements_mutex (fun () ->
+          Hashtbl.replace c.entitlements (Entitlement.id e) e)
+
+    let remove_entitlement (c : t) (id : string) : unit =
+      Eio.Mutex.use_rw ~protect:true c.entitlements_mutex (fun () ->
+          Hashtbl.remove c.entitlements id)
+
+    let put_subscription (c : t) (s : Subscription.t) : unit =
+      Eio.Mutex.use_rw ~protect:true c.subscriptions_mutex (fun () ->
+          Hashtbl.replace c.subscriptions (Subscription.id s) s)
+
+    let remove_subscription (c : t) (id : string) : unit =
+      Eio.Mutex.use_rw ~protect:true c.subscriptions_mutex (fun () ->
+          Hashtbl.remove c.subscriptions id)
+
+    let put_soundboard_sound (c : t) (s : Soundboard_sound.t) : unit =
+      match Soundboard_sound.guild_id s with
+      | Some guild_id ->
+          Eio.Mutex.use_rw ~protect:true c.soundboard_sounds_mutex (fun () ->
+              Hashtbl.replace c.soundboard_sounds
+                (guild_id, Soundboard_sound.sound_id s)
+                s)
+      | None -> ()
+
+    let remove_soundboard_sound (c : t) (guild_id : string) (sound_id : string)
+        : unit =
+      Eio.Mutex.use_rw ~protect:true c.soundboard_sounds_mutex (fun () ->
+          Hashtbl.remove c.soundboard_sounds (guild_id, sound_id))
+
+    let put_soundboard_sounds (c : t) (guild_id : string)
+        (sounds : Soundboard_sound.t list) : unit =
+      let sound_ids = List.map Soundboard_sound.sound_id sounds in
+      Eio.Mutex.use_rw ~protect:true c.soundboard_sounds_mutex (fun () ->
+          Hashtbl.filter_map_inplace
+            (fun (g, sound_id) s ->
+              if g = guild_id && not (List.mem sound_id sound_ids) then None
+              else Some s)
+            c.soundboard_sounds;
+          List.iter
+            (fun sound ->
+              Hashtbl.replace c.soundboard_sounds
+                (guild_id, Soundboard_sound.sound_id sound)
+                sound)
+            sounds)
+
+    let drop_guild_voice_states (c : t) (guild_id : string) : unit =
+      Eio.Mutex.use_rw ~protect:true c.voice_states_mutex (fun () ->
+          Hashtbl.filter_map_inplace
+            (fun (g, _) v -> if g = guild_id then None else Some v)
+            c.voice_states)
+
+    let drop_guild_soundboard_sounds (c : t) (guild_id : string) : unit =
+      Eio.Mutex.use_rw ~protect:true c.soundboard_sounds_mutex (fun () ->
+          Hashtbl.filter_map_inplace
+            (fun (g, _) s -> if g = guild_id then None else Some s)
+            c.soundboard_sounds)
 
     let fetch_channel (c : t) (id : string) : Channel.t =
       match channel c id with
@@ -823,6 +956,8 @@ include (
                 drop_guild_stage_instances c guild_id;
                 drop_guild_auto_moderation_rules c guild_id;
                 drop_guild_integrations c guild_id;
+                drop_guild_voice_states c guild_id;
+                drop_guild_soundboard_sounds c guild_id;
                 drop_guild_thread_members c channel_ids;
                 let message_ids = drop_guild_messages c channel_ids in
                 drop_reactions c message_ids
@@ -1210,6 +1345,59 @@ include (
               | Some message_id ->
                   remove_reaction c ~message_id ~emoji:(Emoji.identifier emoji)
               | None -> ()))
+      | Discord_private.P_event.Voice_state_update -> (
+          match Voice_state.of_yojson json with
+          | Error msg -> log_decode_error c name msg
+          | Ok voice_state -> (
+              match Voice_state.guild_id voice_state with
+              | Some guild_id ->
+                  put_voice_state c guild_id
+                    (Voice_state.user_id voice_state)
+                    voice_state
+              | None -> ()))
+      | Discord_private.P_event.Entitlement_create
+      | Discord_private.P_event.Entitlement_update ->
+          decode Entitlement.of_yojson (put_entitlement c)
+      | Discord_private.P_event.Entitlement_delete -> (
+          match json |> member "id" |> to_string_option with
+          | Some id -> remove_entitlement c id
+          | None -> ())
+      | Discord_private.P_event.Subscription_create
+      | Discord_private.P_event.Subscription_update ->
+          decode Subscription.of_yojson (put_subscription c)
+      | Discord_private.P_event.Subscription_delete -> (
+          match json |> member "id" |> to_string_option with
+          | Some id -> remove_subscription c id
+          | None -> ())
+      | Discord_private.P_event.Guild_soundboard_sound_create
+      | Discord_private.P_event.Guild_soundboard_sound_update ->
+          decode Soundboard_sound.of_yojson (put_soundboard_sound c)
+      | Discord_private.P_event.Guild_soundboard_sound_delete -> (
+          match
+            ( json |> member "guild_id" |> to_string_option,
+              json |> member "sound_id" |> to_string_option )
+          with
+          | Some guild_id, Some sound_id ->
+              remove_soundboard_sound c guild_id sound_id
+          | _ -> ())
+      | Discord_private.P_event.Guild_soundboard_sounds_update -> (
+          match json |> member "guild_id" |> to_string_option with
+          | Some guild_id ->
+              let sounds =
+                match json |> member "soundboard_sounds" with
+                | `List sounds ->
+                    List.filter_map
+                      (fun sound_json ->
+                        match Soundboard_sound.of_yojson sound_json with
+                        | Ok sound -> Some sound
+                        | Error msg ->
+                            log_decode_error c name msg;
+                            None)
+                      sounds
+                | _ -> []
+              in
+              put_soundboard_sounds c guild_id sounds
+          | None -> ())
       | _ -> ()
 
     let snapshot_event (c : t) (event : Discord_private.P_event.t)
@@ -1223,6 +1411,10 @@ include (
       let find_scheduled_event = scheduled_event in
       let find_auto_moderation_rule = auto_moderation_rule in
       let find_integration = integration in
+      let find_voice_state = voice_state in
+      let find_entitlement = entitlement in
+      let find_subscription = subscription in
+      let find_soundboard_sound = soundboard_sound in
       let open Yojson.Safe.Util in
       let empty =
         {
@@ -1239,6 +1431,10 @@ include (
           scheduled_event = None;
           auto_moderation_rule = None;
           integration = None;
+          voice_state = None;
+          entitlement = None;
+          subscription = None;
+          soundboard_sound = None;
         }
       in
       let with_guild guild_id =
@@ -1339,6 +1535,36 @@ include (
           | Some guild_id, Some user_id ->
               { empty with presence = find_presence c ~guild_id ~user_id }
           | _ -> empty)
+      | Discord_private.P_event.Voice_state_update -> (
+          match
+            ( json |> member "guild_id" |> to_string_option,
+              json |> member "user_id" |> to_string_option )
+          with
+          | Some guild_id, Some user_id ->
+              { empty with voice_state = find_voice_state c ~guild_id ~user_id }
+          | _ -> empty)
+      | Discord_private.P_event.Entitlement_update -> (
+          match json |> member "id" |> to_string_option with
+          | Some id -> { empty with entitlement = find_entitlement c id }
+          | None -> empty)
+      | Discord_private.P_event.Subscription_update -> (
+          match json |> member "id" |> to_string_option with
+          | Some id -> { empty with subscription = find_subscription c id }
+          | None -> empty)
+      | Discord_private.P_event.Guild_soundboard_sound_update
+      | Discord_private.P_event.Guild_soundboard_sound_delete -> (
+          match
+            ( json |> member "guild_id" |> to_string_option,
+              json |> member "sound_id" |> to_string_option )
+          with
+          | Some guild_id, Some sound_id ->
+              {
+                empty with
+                soundboard_sound = find_soundboard_sound c ~guild_id ~sound_id;
+              }
+          | _ -> empty)
+      | Discord_private.P_event.Guild_soundboard_sounds_update ->
+          with_guild (json |> member "guild_id" |> to_string_option)
       | Discord_private.P_event.User_update -> (
           match json |> member "id" |> to_string_option with
           | Some user_id -> { empty with user = find_user c user_id }
@@ -2064,31 +2290,71 @@ include (
                 }
           | None -> log_decode_error c "THREAD_MEMBERS_UPDATE" "missing id")
 
-    let on_voice_channel_status_update (c : t) (f : t -> unit) : unit =
-      add_untyped_handler c Discord_private.P_event.Voice_channel_status_update
-        f
+    let on_voice_channel_status_update (c : t)
+        (f : t -> Event_payload.Voice_channel_status_update.t -> unit) : unit =
+      add_handler c Discord_private.P_event.Voice_channel_status_update
+        (fun t _ json ->
+          let open Yojson.Safe.Util in
+          match json |> member "id" |> to_string_option with
+          | Some id ->
+              let guild_id = json |> member "guild_id" |> to_string_option in
+              let status = json |> member "status" |> to_string_option in
+              f t { id; guild_id; status }
+          | None ->
+              log_decode_error c "VOICE_CHANNEL_STATUS_UPDATE" "missing id")
 
-    let on_voice_channel_start_time_update (c : t) (f : t -> unit) : unit =
-      add_untyped_handler c
-        Discord_private.P_event.Voice_channel_start_time_update f
+    let on_voice_channel_start_time_update (c : t)
+        (f : t -> Event_payload.Voice_channel_start_time_update.t -> unit) :
+        unit =
+      add_handler c Discord_private.P_event.Voice_channel_start_time_update
+        (fun t _ json ->
+          let open Yojson.Safe.Util in
+          match
+            ( json |> member "id" |> to_string_option,
+              json |> member "guild_id" |> to_string_option )
+          with
+          | Some id, Some guild_id ->
+              let voice_start_time =
+                json |> member "voice_start_time" |> to_string_option
+              in
+              f t { id; guild_id; voice_start_time }
+          | _ ->
+              log_decode_error c "VOICE_CHANNEL_START_TIME_UPDATE"
+                "missing id or guild_id")
 
-    let on_entitlement_create (c : t) (f : t -> unit) : unit =
-      add_untyped_handler c Discord_private.P_event.Entitlement_create f
+    let on_entitlement_create (c : t) (f : t -> Entitlement.t -> unit) : unit =
+      add_decoded_handler c Discord_private.P_event.Entitlement_create
+        Entitlement.of_yojson f
 
-    let on_entitlement_update (c : t) (f : t -> unit) : unit =
-      add_untyped_handler c Discord_private.P_event.Entitlement_update f
+    let on_entitlement_update (c : t)
+        (f : t -> Entitlement.t option -> Entitlement.t -> unit) : unit =
+      add_handler c Discord_private.P_event.Entitlement_update
+        (fun t snap json ->
+          match Entitlement.of_yojson json with
+          | Ok entitlement -> f t snap.entitlement entitlement
+          | Error msg -> log_decode_error c "ENTITLEMENT_UPDATE" msg)
 
-    let on_entitlement_delete (c : t) (f : t -> unit) : unit =
-      add_untyped_handler c Discord_private.P_event.Entitlement_delete f
+    let on_entitlement_delete (c : t) (f : t -> Entitlement.t -> unit) : unit =
+      add_decoded_handler c Discord_private.P_event.Entitlement_delete
+        Entitlement.of_yojson f
 
-    let on_subscription_create (c : t) (f : t -> unit) : unit =
-      add_untyped_handler c Discord_private.P_event.Subscription_create f
+    let on_subscription_create (c : t) (f : t -> Subscription.t -> unit) : unit
+        =
+      add_decoded_handler c Discord_private.P_event.Subscription_create
+        Subscription.of_yojson f
 
-    let on_subscription_update (c : t) (f : t -> unit) : unit =
-      add_untyped_handler c Discord_private.P_event.Subscription_update f
+    let on_subscription_update (c : t)
+        (f : t -> Subscription.t option -> Subscription.t -> unit) : unit =
+      add_handler c Discord_private.P_event.Subscription_update
+        (fun t snap json ->
+          match Subscription.of_yojson json with
+          | Ok subscription -> f t snap.subscription subscription
+          | Error msg -> log_decode_error c "SUBSCRIPTION_UPDATE" msg)
 
-    let on_subscription_delete (c : t) (f : t -> unit) : unit =
-      add_untyped_handler c Discord_private.P_event.Subscription_delete f
+    let on_subscription_delete (c : t) (f : t -> Subscription.t -> unit) : unit
+        =
+      add_decoded_handler c Discord_private.P_event.Subscription_delete
+        Subscription.of_yojson f
 
     let on_guild_create (c : t) (f : t -> Guild.t -> unit) : unit =
       add_decoded_handler c Discord_private.P_event.Guild_create Guild.of_yojson
@@ -2393,24 +2659,49 @@ include (
               log_decode_error c "GUILD_SCHEDULED_EVENT_USER_REMOVE"
                 "missing ids")
 
-    let on_guild_soundboard_sound_create (c : t) (f : t -> unit) : unit =
-      add_untyped_handler c
-        Discord_private.P_event.Guild_soundboard_sound_create f
+    let on_guild_soundboard_sound_create (c : t)
+        (f : t -> Soundboard_sound.t -> unit) : unit =
+      add_decoded_handler c
+        Discord_private.P_event.Guild_soundboard_sound_create
+        Soundboard_sound.of_yojson f
 
-    let on_guild_soundboard_sound_update (c : t) (f : t -> unit) : unit =
-      add_untyped_handler c
-        Discord_private.P_event.Guild_soundboard_sound_update f
+    let on_guild_soundboard_sound_update (c : t)
+        (f : t -> Soundboard_sound.t option -> Soundboard_sound.t -> unit) :
+        unit =
+      add_handler c Discord_private.P_event.Guild_soundboard_sound_update
+        (fun t snap json ->
+          match Soundboard_sound.of_yojson json with
+          | Ok sound -> f t snap.soundboard_sound sound
+          | Error msg -> log_decode_error c "GUILD_SOUNDBOARD_SOUND_UPDATE" msg)
 
-    let on_guild_soundboard_sound_delete (c : t) (f : t -> unit) : unit =
-      add_untyped_handler c
-        Discord_private.P_event.Guild_soundboard_sound_delete f
+    let on_guild_soundboard_sound_delete (c : t)
+        (f : t -> Soundboard_sound.t -> unit) : unit =
+      add_handler c Discord_private.P_event.Guild_soundboard_sound_delete
+        (fun t snap json ->
+          match snap.soundboard_sound with
+          | Some sound -> f t sound
+          | None -> (
+              match Soundboard_sound.of_yojson json with
+              | Ok sound -> f t sound
+              | Error msg ->
+                  log_decode_error c "GUILD_SOUNDBOARD_SOUND_DELETE" msg))
 
-    let on_guild_soundboard_sounds_update (c : t) (f : t -> unit) : unit =
-      add_untyped_handler c
-        Discord_private.P_event.Guild_soundboard_sounds_update f
-
-    let on_soundboard_sounds (c : t) (f : t -> unit) : unit =
-      add_untyped_handler c Discord_private.P_event.Soundboard_sounds f
+    let on_guild_soundboard_sounds_update (c : t)
+        (f : t -> Event_payload.Guild_soundboard_sounds_update.t -> unit) : unit
+        =
+      add_handler c Discord_private.P_event.Guild_soundboard_sounds_update
+        (fun t snap json ->
+          let open Yojson.Safe.Util in
+          match json |> member "guild_id" |> to_string_option with
+          | Some guild_id ->
+              let sounds =
+                decode_list c "GUILD_SOUNDBOARD_SOUNDS_UPDATE"
+                  Soundboard_sound.of_yojson json "soundboard_sounds"
+              in
+              f t { guild_id; sounds; guild = snap.guild }
+          | None ->
+              log_decode_error c "GUILD_SOUNDBOARD_SOUNDS_UPDATE"
+                "missing guild_id")
 
     let on_integration_create (c : t) (f : t -> Integration.t -> unit) : unit =
       add_decoded_handler c Discord_private.P_event.Integration_create
@@ -2588,14 +2879,63 @@ include (
           | Ok user -> f t snap.user user
           | Error msg -> log_decode_error c "USER_UPDATE" msg)
 
-    let on_voice_channel_effect_send (c : t) (f : t -> unit) : unit =
-      add_untyped_handler c Discord_private.P_event.Voice_channel_effect_send f
+    let on_voice_channel_effect_send (c : t)
+        (f : t -> Event_payload.Voice_channel_effect.t -> unit) : unit =
+      add_handler c Discord_private.P_event.Voice_channel_effect_send
+        (fun t _ json ->
+          let open Yojson.Safe.Util in
+          try
+            let emoji =
+              match json |> member "emoji" with
+              | `Null -> None
+              | emoji -> (
+                  match Emoji.of_yojson emoji with
+                  | Ok emoji -> Some emoji
+                  | Error msg -> raise (Failure msg))
+            in
+            let payload : Event_payload.Voice_channel_effect.t =
+              {
+                channel_id = json |> member "channel_id" |> to_string;
+                guild_id = json |> member "guild_id" |> to_string;
+                user_id = json |> member "user_id" |> to_string;
+                emoji;
+                animation_id = json |> member "animation_id" |> to_int_option;
+                animation_type =
+                  json |> member "animation_type" |> to_int_option;
+                sound_id = json |> member "sound_id" |> to_string_option;
+                sound_volume = json |> member "sound_volume" |> to_float_option;
+              }
+            in
+            f t payload
+          with
+          | Type_error (msg, _) ->
+              log_decode_error c "VOICE_CHANNEL_EFFECT_SEND" msg
+          | Undefined (msg, _) ->
+              log_decode_error c "VOICE_CHANNEL_EFFECT_SEND" msg
+          | Failure msg -> log_decode_error c "VOICE_CHANNEL_EFFECT_SEND" msg)
 
-    let on_voice_state_update (c : t) (f : t -> unit) : unit =
-      add_untyped_handler c Discord_private.P_event.Voice_state_update f
+    let on_voice_state_update (c : t)
+        (f : t -> Voice_state.t option -> Voice_state.t -> unit) : unit =
+      add_handler c Discord_private.P_event.Voice_state_update
+        (fun t snap json ->
+          match Voice_state.of_yojson json with
+          | Ok voice_state -> f t snap.voice_state voice_state
+          | Error msg -> log_decode_error c "VOICE_STATE_UPDATE" msg)
 
-    let on_voice_server_update (c : t) (f : t -> unit) : unit =
-      add_untyped_handler c Discord_private.P_event.Voice_server_update f
+    let on_voice_server_update (c : t)
+        (f : t -> Event_payload.Voice_server_update.t -> unit) : unit =
+      add_handler c Discord_private.P_event.Voice_server_update (fun t _ json ->
+          let open Yojson.Safe.Util in
+          match
+            ( json |> member "token" |> to_string_option,
+              json |> member "guild_id" |> to_string_option )
+          with
+          | Some token, Some guild_id ->
+              let endpoint = json |> member "endpoint" |> to_string_option in
+              f t { token; guild_id; endpoint }
+          | _ ->
+              log_decode_error c "VOICE_SERVER_UPDATE"
+                "missing token or guild_id")
 
     let on_webhooks_update (c : t)
         (f : t -> Event_payload.Webhooks_update.t -> unit) : unit =
@@ -2639,6 +2979,14 @@ include (
         integrations_mutex = Eio.Mutex.create ();
         unavailable_guilds = Hashtbl.create 0;
         unavailable_guilds_mutex = Eio.Mutex.create ();
+        voice_states = Hashtbl.create 0;
+        voice_states_mutex = Eio.Mutex.create ();
+        entitlements = Hashtbl.create 0;
+        entitlements_mutex = Eio.Mutex.create ();
+        subscriptions = Hashtbl.create 0;
+        subscriptions_mutex = Eio.Mutex.create ();
+        soundboard_sounds = Hashtbl.create 0;
+        soundboard_sounds_mutex = Eio.Mutex.create ();
         decode_errors = Atomic.make [];
         shards = Hashtbl.create 0;
         shards_mutex = Eio.Mutex.create ();
