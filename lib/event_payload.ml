@@ -245,7 +245,7 @@ end
 
 module Application_command_permissions_update = struct
   type permission = { id : string; type_ : int; permission : Permission.t }
-
+  type permission = { id : string; type_ : int; permission : bool }
   type t = {
     id : string;
     application_id : string;
