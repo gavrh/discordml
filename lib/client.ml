@@ -1297,10 +1297,15 @@ include (
           | _ -> empty)
       | Discord_private.P_event.Integration_update
       | Discord_private.P_event.Integration_delete -> (
-          match
-            ( json |> member "guild_id" |> to_string_option,
-              json |> member "id" |> to_string_option )
-          with
+          let guild_id =
+            match json |> member "guild_id" |> to_string_option with
+            | Some guild_id -> Some guild_id
+            | None -> (
+                match Integration.of_yojson json with
+                | Ok integration -> Integration.guild_id integration
+                | Error _ -> None)
+          in
+          match (guild_id, json |> member "id" |> to_string_option) with
           | Some guild_id, Some integration_id ->
               {
                 empty with
