@@ -156,11 +156,11 @@ include (
         let actions =
           match json |> member "actions" with
           | `List l ->
-              List.filter_map
+              List.map
                 (fun a ->
                   match action_of_yojson a with
-                  | Ok action -> Some action
-                  | Error _ -> None)
+                  | Ok action -> action
+                  | Error msg -> raise (Failure msg))
                 l
           | _ -> []
         in
@@ -187,5 +187,6 @@ include (
       with
       | Type_error (msg, _) -> Error msg
       | Undefined (msg, _) -> Error msg
+      | Failure msg -> Error msg
   end :
     Auto_moderation)
