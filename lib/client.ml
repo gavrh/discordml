@@ -712,6 +712,19 @@ include (
         | Ok v -> on_ok v
         | Error msg -> log_decode_error c name msg
       in
+      let decode_items of_yojson field =
+        match json |> member field with
+        | `List items ->
+            List.filter_map
+              (fun item ->
+                match of_yojson item with
+                | Ok v -> Some v
+                | Error msg ->
+                    log_decode_error c name msg;
+                    None)
+              items
+        | _ -> []
+      in
       let cache_guild (g : Guild.t) : unit =
         let guild_id = Guild.id g in
         Eio.Mutex.use_rw ~protect:true c.guilds_mutex (fun () ->
@@ -772,6 +785,31 @@ include (
                 let message_ids = drop_guild_messages c channel_ids in
                 drop_reactions c message_ids
               end
+          | None -> ())
+      | Discord_private.P_event.Guild_emojis_update -> (
+          match json |> member "guild_id" |> to_string_option with
+          | Some guild_id -> (
+              match guild c guild_id with
+              | Some g ->
+                  let g =
+                    Guild.with_emojis g (decode_items Emoji.of_yojson "emojis")
+                  in
+                  Eio.Mutex.use_rw ~protect:true c.guilds_mutex (fun () ->
+                      Hashtbl.replace c.guilds guild_id g)
+              | None -> ())
+          | None -> ())
+      | Discord_private.P_event.Guild_stickers_update -> (
+          match json |> member "guild_id" |> to_string_option with
+          | Some guild_id -> (
+              match guild c guild_id with
+              | Some g ->
+                  let g =
+                    Guild.with_stickers g
+                      (decode_items Sticker.of_yojson "stickers")
+                  in
+                  Eio.Mutex.use_rw ~protect:true c.guilds_mutex (fun () ->
+                      Hashtbl.replace c.guilds guild_id g)
+              | None -> ())
           | None -> ())
       | Discord_private.P_event.Channel_create
       | Discord_private.P_event.Channel_update ->
