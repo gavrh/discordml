@@ -11,6 +11,7 @@
   component
   embed
   emoji
+  entitlement
   event_payload
   guild
   guild_ban
@@ -36,11 +37,14 @@
   rest
   role
   role_subscription_data
+  soundboard_sound
   stage_instance
   sticker
+  subscription
   thread_member
   typing
   user
+  voice_state
   webhook
   welcome_screen
   widget)
