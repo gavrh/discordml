@@ -50,7 +50,6 @@ module type Event = sig
     | Guild_soundboard_sound_update
     | Guild_soundboard_sound_delete
     | Guild_soundboard_sounds_update
-    | Soundboard_sounds
     | Integration_create
     | Integration_update
     | Integration_delete
@@ -135,7 +134,6 @@ include (
       | Guild_soundboard_sound_update
       | Guild_soundboard_sound_delete
       | Guild_soundboard_sounds_update
-      | Soundboard_sounds
       | Integration_create
       | Integration_update
       | Integration_delete
@@ -218,7 +216,6 @@ include (
       | "GUILD_SOUNDBOARD_SOUND_UPDATE" -> Some Guild_soundboard_sound_update
       | "GUILD_SOUNDBOARD_SOUND_DELETE" -> Some Guild_soundboard_sound_delete
       | "GUILD_SOUNDBOARD_SOUNDS_UPDATE" -> Some Guild_soundboard_sounds_update
-      | "SOUNDBOARD_SOUNDS" -> Some Soundboard_sounds
       | "INTEGRATION_CREATE" -> Some Integration_create
       | "INTEGRATION_UPDATE" -> Some Integration_update
       | "INTEGRATION_DELETE" -> Some Integration_delete
@@ -299,7 +296,6 @@ include (
       | Guild_soundboard_sound_update -> "GUILD_SOUNDBOARD_SOUND_UPDATE"
       | Guild_soundboard_sound_delete -> "GUILD_SOUNDBOARD_SOUND_DELETE"
       | Guild_soundboard_sounds_update -> "GUILD_SOUNDBOARD_SOUNDS_UPDATE"
-      | Soundboard_sounds -> "SOUNDBOARD_SOUNDS"
       | Integration_create -> "INTEGRATION_CREATE"
       | Integration_update -> "INTEGRATION_UPDATE"
       | Integration_delete -> "INTEGRATION_DELETE"
