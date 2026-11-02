@@ -11,6 +11,8 @@ module type Guild = sig
   val roles : t -> Role.t list
   val emojis : t -> Emoji.t list
   val stickers : t -> Sticker.t list
+  val with_emojis : t -> Emoji.t list -> t
+  val with_stickers : t -> Sticker.t list -> t
   val members : t -> Member.t list
   val description : t -> string option
   val splash : t -> string option
@@ -117,6 +119,11 @@ include (
     let roles (g : t) = g.roles
     let emojis (g : t) = g.emojis
     let stickers (g : t) = g.stickers
+    let with_emojis (g : t) (emojis : Emoji.t list) : t = { g with emojis }
+
+    let with_stickers (g : t) (stickers : Sticker.t list) : t =
+      { g with stickers }
+
     let members (g : t) = g.members
     let description (g : t) = g.description
     let splash (g : t) = g.splash
