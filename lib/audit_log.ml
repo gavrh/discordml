@@ -267,11 +267,11 @@ include (
         let changes =
           match json |> member "audit_log_entries" with
           | `List l ->
-              List.filter_map
+              List.map
                 (fun e ->
                   match entry_of_yojson e with
-                  | Ok entry -> Some entry
-                  | Error _ -> None)
+                  | Ok entry -> entry
+                  | Error msg -> raise (Failure msg))
                 l
           | _ -> []
         in
@@ -293,5 +293,6 @@ include (
       with
       | Type_error (msg, _) -> Error msg
       | Undefined (msg, _) -> Error msg
+      | Failure msg -> Error msg
   end :
     Audit_log)
