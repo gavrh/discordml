@@ -242,3 +242,107 @@ module Invite_delete = struct
   let channel_id (t : t) : string = t.channel_id
   let guild_id (t : t) : string option = t.guild_id
 end
+
+module Application_command_permissions_update = struct
+  type permission = { id : string; type_ : int; permission : bool }
+
+  type t = {
+    id : string;
+    application_id : string;
+    guild_id : string;
+    permissions : permission list;
+  }
+
+  let id (t : t) : string = t.id
+  let application_id (t : t) : string = t.application_id
+  let guild_id (t : t) : string = t.guild_id
+  let permissions (t : t) : permission list = t.permissions
+  let permission_id (p : permission) : string = p.id
+  let permission_type (p : permission) : int = p.type_
+  let permission_permission (p : permission) : bool = p.permission
+end
+
+module Auto_moderation_rule_delete = struct
+  type t = {
+    guild_id : string;
+    rule_id : string;
+    rule : Auto_moderation.t option;
+  }
+
+  let guild_id (t : t) : string = t.guild_id
+  let rule_id (t : t) : string = t.rule_id
+  let rule (t : t) : Auto_moderation.t option = t.rule
+end
+
+module Auto_moderation_action_execution = struct
+  type t = {
+    guild_id : string;
+    rule_id : string;
+    rule_trigger_type : int;
+    user_id : string;
+    action : Auto_moderation.action;
+    channel_id : string option;
+    message_id : string option;
+    alert_system_message_id : string option;
+    content : string option;
+    matched_keyword : string option;
+    matched_content : string option;
+  }
+
+  let guild_id (t : t) : string = t.guild_id
+  let rule_id (t : t) : string = t.rule_id
+  let rule_trigger_type (t : t) : int = t.rule_trigger_type
+  let user_id (t : t) : string = t.user_id
+  let action (t : t) : Auto_moderation.action = t.action
+  let channel_id (t : t) : string option = t.channel_id
+  let message_id (t : t) : string option = t.message_id
+
+  let alert_system_message_id (t : t) : string option =
+    t.alert_system_message_id
+
+  let content (t : t) : string option = t.content
+  let matched_keyword (t : t) : string option = t.matched_keyword
+  let matched_content (t : t) : string option = t.matched_content
+end
+
+module Guild_scheduled_event_user = struct
+  type t = {
+    guild_id : string;
+    event_id : string;
+    user_id : string;
+    event : Guild_scheduled_event.t option;
+    user : User.t option;
+  }
+
+  let guild_id (t : t) : string = t.guild_id
+  let event_id (t : t) : string = t.event_id
+  let user_id (t : t) : string = t.user_id
+  let event (t : t) : Guild_scheduled_event.t option = t.event
+  let user (t : t) : User.t option = t.user
+end
+
+module Integration_delete = struct
+  type t = {
+    id : string;
+    guild_id : string;
+    application_id : string option;
+    integration : Integration.t option;
+  }
+
+  let id (t : t) : string = t.id
+  let guild_id (t : t) : string = t.guild_id
+  let application_id (t : t) : string option = t.application_id
+  let integration (t : t) : Integration.t option = t.integration
+end
+
+module Guild_audit_log_entry = struct
+  type t = {
+    guild_id : string;
+    entry : Audit_log.entry;
+    guild : Guild.t option;
+  }
+
+  let guild_id (t : t) : string = t.guild_id
+  let entry (t : t) : Audit_log.entry = t.entry
+  let guild (t : t) : Guild.t option = t.guild
+end
