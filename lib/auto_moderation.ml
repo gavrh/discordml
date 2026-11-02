@@ -44,6 +44,7 @@ module type Auto_moderation = sig
   val pp : Format.formatter -> t -> unit
   val equal : t -> t -> bool
   val show : t -> string
+  val action_of_yojson : Yojson.Safe.t -> (action, string) result
   val of_yojson : Yojson.Safe.t -> (t, string) result
 end
 
@@ -107,6 +108,32 @@ include (
       | `List l -> List.filter_map (function `Int n -> Some n | _ -> None) l
       | _ -> []
 
+    let action_of_yojson (json : Yojson.Safe.t) : (action, string) result =
+      let open Yojson.Safe.Util in
+      try
+        let metadata =
+          match json |> member "metadata" with
+          | `Null -> None
+          | m ->
+              Some
+                {
+                  channel_id = m |> member "channel_id" |> to_string_option;
+                  duration_seconds =
+                    m |> member "duration_seconds" |> to_int_option;
+                  custom_message =
+                    m |> member "custom_message" |> to_string_option;
+                }
+        in
+        Ok
+          {
+            type_ =
+              json |> member "type" |> to_int_option |> Option.value ~default:0;
+            metadata;
+          }
+      with
+      | Type_error (msg, _) -> Error msg
+      | Undefined (msg, _) -> Error msg
+
     let of_yojson (json : Yojson.Safe.t) : (t, string) result =
       let open Yojson.Safe.Util in
       try
@@ -129,28 +156,11 @@ include (
         let actions =
           match json |> member "actions" with
           | `List l ->
-              List.map
+              List.filter_map
                 (fun a ->
-                  let metadata =
-                    match a |> member "metadata" with
-                    | `Null -> None
-                    | m ->
-                        Some
-                          {
-                            channel_id =
-                              m |> member "channel_id" |> to_string_option;
-                            duration_seconds =
-                              m |> member "duration_seconds" |> to_int_option;
-                            custom_message =
-                              m |> member "custom_message" |> to_string_option;
-                          }
-                  in
-                  {
-                    type_ =
-                      a |> member "type" |> to_int_option
-                      |> Option.value ~default:0;
-                    metadata;
-                  })
+                  match action_of_yojson a with
+                  | Ok action -> Some action
+                  | Error _ -> None)
                 l
           | _ -> []
         in

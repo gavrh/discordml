@@ -60,6 +60,7 @@ module type Audit_log = sig
   val pp : Format.formatter -> t -> unit
   val equal : t -> t -> bool
   val show : t -> string
+  val entry_of_yojson : Yojson.Safe.t -> (entry, string) result
   val of_yojson : Yojson.Safe.t -> (t, string) result
 end
 
@@ -196,6 +197,61 @@ include (
       | `Null -> None
       | v -> Some (f v)
 
+    let entry_of_yojson (json : Yojson.Safe.t) : (entry, string) result =
+      let open Yojson.Safe.Util in
+      try
+        let changes =
+          match json |> member "changes" with
+          | `List cl ->
+              List.map
+                (fun c ->
+                  {
+                    key = c |> member "key" |> to_string;
+                    old_value = parse_opt c "old_value" parse_value;
+                    new_value = parse_opt c "new_value" parse_value;
+                  })
+                cl
+          | _ -> []
+        in
+        let options =
+          parse_opt json "options" (fun o ->
+              {
+                application_id =
+                  o |> member "application_id" |> to_string_option;
+                channel_id = o |> member "channel_id" |> to_string_option;
+                count = o |> member "count" |> to_int_option;
+                delete_member_days =
+                  o |> member "delete_member_days" |> to_string_option;
+                id = o |> member "id" |> to_string_option;
+                members_removed =
+                  o |> member "members_removed" |> to_string_option;
+                message_id = o |> member "message_id" |> to_string_option;
+                role_name = o |> member "role_name" |> to_string_option;
+                type_ =
+                  (match o |> member "type" with
+                  | `String s -> Some s
+                  | `Int n -> Some (string_of_int n)
+                  | _ -> None);
+                integration_type =
+                  o |> member "integration_type" |> to_string_option;
+              })
+        in
+        Ok
+          {
+            target_id = json |> member "target_id" |> to_string_option;
+            changes;
+            user_id = json |> member "user_id" |> to_string_option;
+            id = json |> member "id" |> to_string;
+            action_type =
+              json |> member "action_type" |> to_int_option
+              |> Option.value ~default:0;
+            options;
+            reason = json |> member "reason" |> to_string_option;
+          }
+      with
+      | Type_error (msg, _) -> Error msg
+      | Undefined (msg, _) -> Error msg
+
     let of_yojson (json : Yojson.Safe.t) : (t, string) result =
       let open Yojson.Safe.Util in
       try
@@ -211,58 +267,11 @@ include (
         let changes =
           match json |> member "audit_log_entries" with
           | `List l ->
-              List.map
+              List.filter_map
                 (fun e ->
-                  let changes =
-                    match e |> member "changes" with
-                    | `List cl ->
-                        List.map
-                          (fun c ->
-                            {
-                              key = c |> member "key" |> to_string;
-                              old_value = parse_opt c "old_value" parse_value;
-                              new_value = parse_opt c "new_value" parse_value;
-                            })
-                          cl
-                    | _ -> []
-                  in
-                  let options =
-                    parse_opt e "options" (fun o ->
-                        {
-                          application_id =
-                            o |> member "application_id" |> to_string_option;
-                          channel_id =
-                            o |> member "channel_id" |> to_string_option;
-                          count = o |> member "count" |> to_int_option;
-                          delete_member_days =
-                            o |> member "delete_member_days" |> to_string_option;
-                          id = o |> member "id" |> to_string_option;
-                          members_removed =
-                            o |> member "members_removed" |> to_string_option;
-                          message_id =
-                            o |> member "message_id" |> to_string_option;
-                          role_name =
-                            o |> member "role_name" |> to_string_option;
-                          type_ =
-                            (match o |> member "type" with
-                            | `String s -> Some s
-                            | `Int n -> Some (string_of_int n)
-                            | _ -> None);
-                          integration_type =
-                            o |> member "integration_type" |> to_string_option;
-                        })
-                  in
-                  {
-                    target_id = e |> member "target_id" |> to_string_option;
-                    changes;
-                    user_id = e |> member "user_id" |> to_string_option;
-                    id = e |> member "id" |> to_string;
-                    action_type =
-                      e |> member "action_type" |> to_int_option
-                      |> Option.value ~default:0;
-                    options;
-                    reason = e |> member "reason" |> to_string_option;
-                  })
+                  match entry_of_yojson e with
+                  | Ok entry -> Some entry
+                  | Error _ -> None)
                 l
           | _ -> []
         in
