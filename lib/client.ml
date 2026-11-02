@@ -109,6 +109,13 @@ module type Client = sig
   val on_guild_stickers_update :
     t -> (t -> string -> Sticker.t list -> Sticker.t list -> unit) -> unit
 
+  val on_emoji_create : t -> (t -> Emoji.t -> unit) -> unit
+  val on_emoji_update : t -> (t -> Emoji.t -> Emoji.t -> unit) -> unit
+  val on_emoji_delete : t -> (t -> Emoji.t -> unit) -> unit
+  val on_sticker_create : t -> (t -> Sticker.t -> unit) -> unit
+  val on_sticker_update : t -> (t -> Sticker.t -> Sticker.t -> unit) -> unit
+  val on_sticker_delete : t -> (t -> Sticker.t -> unit) -> unit
+
   val on_guild_integrations_update :
     t -> (t -> string -> Guild.t option -> unit) -> unit
 
@@ -322,6 +329,17 @@ include (
       message_reaction_remove_emoji_handlers :
         (t -> Event_payload.Message_reaction_remove_emoji.t -> unit) list
         Atomic.t;
+          [@opaque]
+      emoji_create_handlers : (t -> Emoji.t -> unit) list Atomic.t; [@opaque]
+      emoji_update_handlers : (t -> Emoji.t -> Emoji.t -> unit) list Atomic.t;
+          [@opaque]
+      emoji_delete_handlers : (t -> Emoji.t -> unit) list Atomic.t; [@opaque]
+      sticker_create_handlers : (t -> Sticker.t -> unit) list Atomic.t;
+          [@opaque]
+      sticker_update_handlers :
+        (t -> Sticker.t -> Sticker.t -> unit) list Atomic.t;
+          [@opaque]
+      sticker_delete_handlers : (t -> Sticker.t -> unit) list Atomic.t;
           [@opaque]
       mutable user : User.t option;
           [@printer
@@ -1699,6 +1717,78 @@ include (
       in
       add ()
 
+    let run_handlers ~sw (handlers : 'a list Atomic.t) (f : 'a -> unit) : unit =
+      List.iter
+        (fun handler -> Eio.Fiber.fork ~sw (fun () -> f handler))
+        (Atomic.get handlers)
+
+    let diff ~(key : 'a -> string) ~(equal : 'a -> 'a -> bool) (old : 'a list)
+        (current : 'a list) : 'a list * ('a * 'a) list * 'a list =
+      let added =
+        List.filter
+          (fun new_item ->
+            not (List.exists (fun old_item -> key old_item = key new_item) old))
+          current
+      in
+      let updated =
+        List.filter_map
+          (fun new_item ->
+            match
+              List.find_opt (fun old_item -> key old_item = key new_item) old
+            with
+            | Some old_item when not (equal old_item new_item) ->
+                Some (old_item, new_item)
+            | _ -> None)
+          current
+      in
+      let removed =
+        List.filter
+          (fun old_item ->
+            not
+              (List.exists
+                 (fun new_item -> key new_item = key old_item)
+                 current))
+          old
+      in
+      (added, updated, removed)
+
+    let dispatch_emoji_diff ~sw (c : t) ~(old : Emoji.t list)
+        ~(current : Emoji.t list) : unit =
+      let added, updated, removed =
+        diff ~key:Emoji.identifier ~equal:Emoji.equal old current
+      in
+      List.iter
+        (fun emoji ->
+          run_handlers ~sw c.emoji_create_handlers (fun f -> f c emoji))
+        added;
+      List.iter
+        (fun (previous, emoji) ->
+          run_handlers ~sw c.emoji_update_handlers (fun f -> f c previous emoji))
+        updated;
+      List.iter
+        (fun emoji ->
+          run_handlers ~sw c.emoji_delete_handlers (fun f -> f c emoji))
+        removed
+
+    let dispatch_sticker_diff ~sw (c : t) ~(old : Sticker.t list)
+        ~(current : Sticker.t list) : unit =
+      let added, updated, removed =
+        diff ~key:Sticker.id ~equal:Sticker.equal old current
+      in
+      List.iter
+        (fun sticker ->
+          run_handlers ~sw c.sticker_create_handlers (fun f -> f c sticker))
+        added;
+      List.iter
+        (fun (previous, sticker) ->
+          run_handlers ~sw c.sticker_update_handlers (fun f ->
+              f c previous sticker))
+        updated;
+      List.iter
+        (fun sticker ->
+          run_handlers ~sw c.sticker_delete_handlers (fun f -> f c sticker))
+        removed
+
     let on_ready (c : t) (f : t -> unit) : unit =
       add_untyped_handler c Discord_private.P_event.Ready f
 
@@ -2064,6 +2154,25 @@ include (
               in
               f t guild_id snap.stickers stickers
           | None -> ())
+
+    let on_emoji_create (c : t) (f : t -> Emoji.t -> unit) : unit =
+      add_typed c.emoji_create_handlers f
+
+    let on_emoji_update (c : t) (f : t -> Emoji.t -> Emoji.t -> unit) : unit =
+      add_typed c.emoji_update_handlers f
+
+    let on_emoji_delete (c : t) (f : t -> Emoji.t -> unit) : unit =
+      add_typed c.emoji_delete_handlers f
+
+    let on_sticker_create (c : t) (f : t -> Sticker.t -> unit) : unit =
+      add_typed c.sticker_create_handlers f
+
+    let on_sticker_update (c : t) (f : t -> Sticker.t -> Sticker.t -> unit) :
+        unit =
+      add_typed c.sticker_update_handlers f
+
+    let on_sticker_delete (c : t) (f : t -> Sticker.t -> unit) : unit =
+      add_typed c.sticker_delete_handlers f
 
     let on_guild_integrations_update (c : t)
         (f : t -> string -> Guild.t option -> unit) : unit =
@@ -2505,6 +2614,12 @@ include (
         message_reaction_remove_handlers = Atomic.make [];
         message_reaction_remove_all_handlers = Atomic.make [];
         message_reaction_remove_emoji_handlers = Atomic.make [];
+        emoji_create_handlers = Atomic.make [];
+        emoji_update_handlers = Atomic.make [];
+        emoji_delete_handlers = Atomic.make [];
+        sticker_create_handlers = Atomic.make [];
+        sticker_update_handlers = Atomic.make [];
+        sticker_delete_handlers = Atomic.make [];
         user = None;
         rest = None;
       }
@@ -2556,6 +2671,26 @@ include (
                 match User.of_yojson (json |> member "user") with
                 | Ok user -> c.user <- Some user
                 | Error _ -> ())
+            | _ -> ());
+            (match event with
+            | Discord_private.P_event.Guild_emojis_update -> (
+                match json |> member "guild_id" |> to_string_option with
+                | Some guild_id ->
+                    let current =
+                      decode_list c "GUILD_EMOJIS_UPDATE" Emoji.of_yojson json
+                        "emojis"
+                    in
+                    dispatch_emoji_diff ~sw c ~old:snap.emojis ~current
+                | None -> ())
+            | Discord_private.P_event.Guild_stickers_update -> (
+                match json |> member "guild_id" |> to_string_option with
+                | Some guild_id ->
+                    let current =
+                      decode_list c "GUILD_STICKERS_UPDATE" Sticker.of_yojson
+                        json "stickers"
+                    in
+                    dispatch_sticker_diff ~sw c ~old:snap.stickers ~current
+                | None -> ())
             | _ -> ());
             match event with
             | Discord_private.P_event.Guild_create
