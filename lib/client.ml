@@ -100,6 +100,11 @@ module type Client = sig
   val on_guild_audit_log_entry_create :
     t -> (t -> Event_payload.Guild_audit_log_entry.t -> unit) -> unit
 
+  val on_guild_available : t -> (t -> Guild.t -> unit) -> unit
+
+  val on_guild_unavailable :
+    t -> (t -> Event_payload.Guild_unavailable.t -> unit) -> unit
+
   val on_guild_ban_add : t -> (t -> string -> Guild_ban.t -> unit) -> unit
   val on_guild_ban_remove : t -> (t -> string -> Guild_ban.t -> unit) -> unit
 
@@ -296,6 +301,10 @@ include (
           [@printer
             fun fmt tbl -> Format.fprintf fmt "[ ...%d ]" (Hashtbl.length tbl)]
       integrations_mutex : Eio.Mutex.t; [@opaque]
+      unavailable_guilds : (string, unit) Hashtbl.t;
+          [@printer
+            fun fmt tbl -> Format.fprintf fmt "[ ...%d ]" (Hashtbl.length tbl)]
+      unavailable_guilds_mutex : Eio.Mutex.t; [@opaque]
       decode_errors : string list Atomic.t; [@opaque]
       shards : (int, Discord_private.P_shard.t) Hashtbl.t;
           [@printer
@@ -340,6 +349,10 @@ include (
         (t -> Sticker.t -> Sticker.t -> unit) list Atomic.t;
           [@opaque]
       sticker_delete_handlers : (t -> Sticker.t -> unit) list Atomic.t;
+          [@opaque]
+      guild_available_handlers : (t -> Guild.t -> unit) list Atomic.t; [@opaque]
+      guild_unavailable_handlers :
+        (t -> Event_payload.Guild_unavailable.t -> unit) list Atomic.t;
           [@opaque]
       mutable user : User.t option;
           [@printer
@@ -1218,6 +1231,7 @@ include (
         | None -> empty
       in
       match event with
+      | Discord_private.P_event.Guild_create
       | Discord_private.P_event.Guild_update
       | Discord_private.P_event.Guild_delete ->
           with_guild (json |> member "id" |> to_string_option)
@@ -1722,6 +1736,20 @@ include (
         (fun handler -> Eio.Fiber.fork ~sw (fun () -> f handler))
         (Atomic.get handlers)
 
+    let mark_unavailable (c : t) (guild_id : string) : bool =
+      Eio.Mutex.use_rw ~protect:true c.unavailable_guilds_mutex (fun () ->
+          if Hashtbl.mem c.unavailable_guilds guild_id then false
+          else begin
+            Hashtbl.replace c.unavailable_guilds guild_id ();
+            true
+          end)
+
+    let mark_available (c : t) (guild_id : string) : bool =
+      Eio.Mutex.use_rw ~protect:true c.unavailable_guilds_mutex (fun () ->
+          let was_unavailable = Hashtbl.mem c.unavailable_guilds guild_id in
+          Hashtbl.remove c.unavailable_guilds guild_id;
+          was_unavailable)
+
     let diff ~(key : 'a -> string) ~(equal : 'a -> 'a -> bool) (old : 'a list)
         (current : 'a list) : 'a list * ('a * 'a) list * 'a list =
       let added =
@@ -2102,6 +2130,13 @@ include (
           | None, _ ->
               log_decode_error c "GUILD_AUDIT_LOG_ENTRY_CREATE"
                 "missing guild_id")
+
+    let on_guild_available (c : t) (f : t -> Guild.t -> unit) : unit =
+      add_typed c.guild_available_handlers f
+
+    let on_guild_unavailable (c : t)
+        (f : t -> Event_payload.Guild_unavailable.t -> unit) : unit =
+      add_typed c.guild_unavailable_handlers f
 
     let on_guild_ban_add (c : t) (f : t -> string -> Guild_ban.t -> unit) : unit
         =
@@ -2602,6 +2637,8 @@ include (
         auto_moderation_rules_mutex = Eio.Mutex.create ();
         integrations = Hashtbl.create 0;
         integrations_mutex = Eio.Mutex.create ();
+        unavailable_guilds = Hashtbl.create 0;
+        unavailable_guilds_mutex = Eio.Mutex.create ();
         decode_errors = Atomic.make [];
         shards = Hashtbl.create 0;
         shards_mutex = Eio.Mutex.create ();
@@ -2620,6 +2657,8 @@ include (
         sticker_create_handlers = Atomic.make [];
         sticker_update_handlers = Atomic.make [];
         sticker_delete_handlers = Atomic.make [];
+        guild_available_handlers = Atomic.make [];
+        guild_unavailable_handlers = Atomic.make [];
         user = None;
         rest = None;
       }
@@ -2672,7 +2711,46 @@ include (
                 | Ok user -> c.user <- Some user
                 | Error _ -> ())
             | _ -> ());
+            let unavailable =
+              json |> member "unavailable" |> to_bool_option
+              |> Option.value ~default:false
+            in
+            let guild_id = json |> member "id" |> to_string_option in
+            let emit_unavailable guild_id =
+              let payload : Event_payload.Guild_unavailable.t =
+                { id = guild_id; guild = snap.guild }
+              in
+              run_handlers ~sw c.guild_unavailable_handlers (fun f ->
+                  f c payload)
+            in
             (match event with
+            | Discord_private.P_event.Guild_create when unavailable ->
+                Option.iter
+                  (fun guild_id ->
+                    if mark_unavailable c guild_id then
+                      emit_unavailable guild_id)
+                  guild_id
+            | Discord_private.P_event.Guild_create -> (
+                match guild_id with
+                | Some guild_id -> (
+                    if mark_available c guild_id then
+                      match guild c guild_id with
+                      | Some g ->
+                          run_handlers ~sw c.guild_available_handlers (fun f ->
+                              f c g)
+                      | None -> ())
+                | None -> ())
+            | Discord_private.P_event.Guild_delete ->
+                if unavailable then
+                  Option.iter
+                    (fun guild_id ->
+                      if mark_unavailable c guild_id then
+                        emit_unavailable guild_id)
+                    guild_id
+                else
+                  Option.iter
+                    (fun guild_id -> ignore (mark_available c guild_id))
+                    guild_id
             | Discord_private.P_event.Guild_emojis_update -> (
                 match json |> member "guild_id" |> to_string_option with
                 | Some guild_id ->
@@ -2693,9 +2771,7 @@ include (
                 | None -> ())
             | _ -> ());
             match event with
-            | Discord_private.P_event.Guild_create
-              when json |> member "unavailable" |> to_bool_option = Some true ->
-                ()
+            | Discord_private.P_event.Guild_create when unavailable -> ()
             | _ ->
                 let handlers =
                   match Hashtbl.find_opt (Atomic.get c.handlers) event with
