@@ -25,6 +25,9 @@ module type Client = sig
   val auto_moderation_rule :
     t -> guild_id:string -> rule_id:string -> Auto_moderation.t option
 
+  val integration :
+    t -> guild_id:string -> integration_id:string -> Integration.t option
+
   val user : t -> User.t option
   val rest : t -> Rest.t
   val guilds : t -> Guild.t list
@@ -36,11 +39,24 @@ module type Client = sig
   val fetch_member : t -> guild_id:string -> user_id:string -> Member.t
   val on_ready : t -> (t -> unit) -> unit
   val on_resumed : t -> (t -> unit) -> unit
-  val on_application_command_permissions_update : t -> (t -> unit) -> unit
-  val on_auto_moderation_rule_create : t -> (t -> unit) -> unit
-  val on_auto_moderation_rule_update : t -> (t -> unit) -> unit
-  val on_auto_moderation_rule_delete : t -> (t -> unit) -> unit
-  val on_auto_moderation_action_execution : t -> (t -> unit) -> unit
+
+  val on_application_command_permissions_update :
+    t ->
+    (t -> Event_payload.Application_command_permissions_update.t -> unit) ->
+    unit
+
+  val on_auto_moderation_rule_create :
+    t -> (t -> Auto_moderation.t -> unit) -> unit
+
+  val on_auto_moderation_rule_update :
+    t -> (t -> Auto_moderation.t option -> Auto_moderation.t -> unit) -> unit
+
+  val on_auto_moderation_rule_delete :
+    t -> (t -> Event_payload.Auto_moderation_rule_delete.t -> unit) -> unit
+
+  val on_auto_moderation_action_execution :
+    t -> (t -> Event_payload.Auto_moderation_action_execution.t -> unit) -> unit
+
   val on_channel_create : t -> (t -> Channel.t -> unit) -> unit
 
   val on_channel_update :
@@ -80,7 +96,10 @@ module type Client = sig
   val on_guild_create : t -> (t -> Guild.t -> unit) -> unit
   val on_guild_update : t -> (t -> Guild.t option -> Guild.t -> unit) -> unit
   val on_guild_delete : t -> (t -> Event_payload.Guild_delete.t -> unit) -> unit
-  val on_guild_audit_log_entry_create : t -> (t -> unit) -> unit
+
+  val on_guild_audit_log_entry_create :
+    t -> (t -> Event_payload.Guild_audit_log_entry.t -> unit) -> unit
+
   val on_guild_ban_add : t -> (t -> string -> Guild_ban.t -> unit) -> unit
   val on_guild_ban_remove : t -> (t -> string -> Guild_ban.t -> unit) -> unit
 
@@ -112,20 +131,37 @@ module type Client = sig
   val on_guild_role_delete :
     t -> (t -> Event_payload.Role_delete.t -> unit) -> unit
 
-  val on_guild_scheduled_event_create : t -> (t -> unit) -> unit
-  val on_guild_scheduled_event_update : t -> (t -> unit) -> unit
-  val on_guild_scheduled_event_delete : t -> (t -> unit) -> unit
-  val on_guild_scheduled_event_user_add : t -> (t -> unit) -> unit
-  val on_guild_scheduled_event_user_remove : t -> (t -> unit) -> unit
+  val on_guild_scheduled_event_create :
+    t -> (t -> Guild_scheduled_event.t -> unit) -> unit
+
+  val on_guild_scheduled_event_update :
+    t ->
+    (t -> Guild_scheduled_event.t option -> Guild_scheduled_event.t -> unit) ->
+    unit
+
+  val on_guild_scheduled_event_delete :
+    t -> (t -> Guild_scheduled_event.t -> unit) -> unit
+
+  val on_guild_scheduled_event_user_add :
+    t -> (t -> Event_payload.Guild_scheduled_event_user.t -> unit) -> unit
+
+  val on_guild_scheduled_event_user_remove :
+    t -> (t -> Event_payload.Guild_scheduled_event_user.t -> unit) -> unit
+
   val on_guild_soundboard_sound_create : t -> (t -> unit) -> unit
   val on_guild_soundboard_sound_update : t -> (t -> unit) -> unit
   val on_guild_soundboard_sound_delete : t -> (t -> unit) -> unit
   val on_guild_soundboard_sounds_update : t -> (t -> unit) -> unit
   val on_soundboard_sounds : t -> (t -> unit) -> unit
-  val on_integration_create : t -> (t -> unit) -> unit
-  val on_integration_update : t -> (t -> unit) -> unit
-  val on_integration_delete : t -> (t -> unit) -> unit
-  val on_interaction_create : t -> (t -> unit) -> unit
+  val on_integration_create : t -> (t -> Integration.t -> unit) -> unit
+
+  val on_integration_update :
+    t -> (t -> Integration.t option -> Integration.t -> unit) -> unit
+
+  val on_integration_delete :
+    t -> (t -> Event_payload.Integration_delete.t -> unit) -> unit
+
+  val on_interaction_create : t -> (t -> Interaction.t -> unit) -> unit
 
   val on_invite_create :
     t -> (t -> Event_payload.Invite_create.t -> unit) -> unit
@@ -193,6 +229,9 @@ include (
       thread_members : Thread_member.t list;
       emojis : Emoji.t list;
       stickers : Sticker.t list;
+      scheduled_event : Guild_scheduled_event.t option;
+      auto_moderation_rule : Auto_moderation.t option;
+      integration : Integration.t option;
     }
 
     type t = {
@@ -246,6 +285,10 @@ include (
           [@printer
             fun fmt tbl -> Format.fprintf fmt "[ ...%d ]" (Hashtbl.length tbl)]
       auto_moderation_rules_mutex : Eio.Mutex.t; [@opaque]
+      integrations : (string * string, Integration.t) Hashtbl.t;
+          [@printer
+            fun fmt tbl -> Format.fprintf fmt "[ ...%d ]" (Hashtbl.length tbl)]
+      integrations_mutex : Eio.Mutex.t; [@opaque]
       decode_errors : string list Atomic.t; [@opaque]
       shards : (int, Discord_private.P_shard.t) Hashtbl.t;
           [@printer
@@ -345,6 +388,11 @@ include (
         Auto_moderation.t option =
       Eio.Mutex.use_ro c.auto_moderation_rules_mutex (fun () ->
           Hashtbl.find_opt c.auto_moderation_rules (guild_id, rule_id))
+
+    let integration (c : t) ~(guild_id : string) ~(integration_id : string) :
+        Integration.t option =
+      Eio.Mutex.use_ro c.integrations_mutex (fun () ->
+          Hashtbl.find_opt c.integrations (guild_id, integration_id))
 
     let user (c : t) : User.t option = c.user
 
@@ -518,6 +566,15 @@ include (
       Eio.Mutex.use_rw ~protect:true c.auto_moderation_rules_mutex (fun () ->
           Hashtbl.remove c.auto_moderation_rules (guild_id, rule_id))
 
+    let put_integration (c : t) (guild_id : string) (i : Integration.t) : unit =
+      Eio.Mutex.use_rw ~protect:true c.integrations_mutex (fun () ->
+          Hashtbl.replace c.integrations (guild_id, Integration.id i) i)
+
+    let remove_integration (c : t) (guild_id : string) (integration_id : string)
+        : unit =
+      Eio.Mutex.use_rw ~protect:true c.integrations_mutex (fun () ->
+          Hashtbl.remove c.integrations (guild_id, integration_id))
+
     let fetch_channel (c : t) (id : string) : Channel.t =
       match channel c id with
       | Some ch -> ch
@@ -597,6 +654,12 @@ include (
           Hashtbl.filter_map_inplace
             (fun (g, _) r -> if g = guild_id then None else Some r)
             c.auto_moderation_rules)
+
+    let drop_guild_integrations (c : t) (guild_id : string) : unit =
+      Eio.Mutex.use_rw ~protect:true c.integrations_mutex (fun () ->
+          Hashtbl.filter_map_inplace
+            (fun (g, _) i -> if g = guild_id then None else Some i)
+            c.integrations)
 
     let drop_guild_thread_members (c : t) (thread_ids : string list) : unit =
       Eio.Mutex.use_rw ~protect:true c.thread_members_mutex (fun () ->
@@ -704,6 +767,7 @@ include (
                 drop_guild_scheduled_events c guild_id;
                 drop_guild_stage_instances c guild_id;
                 drop_guild_auto_moderation_rules c guild_id;
+                drop_guild_integrations c guild_id;
                 drop_guild_thread_members c channel_ids;
                 let message_ids = drop_guild_messages c channel_ids in
                 drop_reactions c message_ids
@@ -850,6 +914,25 @@ include (
           with
           | Some guild_id, Some rule_id ->
               remove_auto_moderation_rule c guild_id rule_id
+          | _ -> ())
+      | Discord_private.P_event.Integration_create
+      | Discord_private.P_event.Integration_update ->
+          decode Integration.of_yojson (fun i ->
+              let guild_id =
+                match json |> member "guild_id" |> to_string_option with
+                | Some guild_id -> Some guild_id
+                | None -> Integration.guild_id i
+              in
+              match guild_id with
+              | Some guild_id -> put_integration c guild_id i
+              | None -> ())
+      | Discord_private.P_event.Integration_delete -> (
+          match
+            ( json |> member "guild_id" |> to_string_option,
+              json |> member "id" |> to_string_option )
+          with
+          | Some guild_id, Some integration_id ->
+              remove_integration c guild_id integration_id
           | _ -> ())
       | Discord_private.P_event.Thread_list_sync -> (
           (match json |> member "threads" with
@@ -1052,6 +1135,9 @@ include (
       let find_presence = presence in
       let find_user = user_by_id in
       let find_thread_member = thread_member in
+      let find_scheduled_event = scheduled_event in
+      let find_auto_moderation_rule = auto_moderation_rule in
+      let find_integration = integration in
       let open Yojson.Safe.Util in
       let empty =
         {
@@ -1065,6 +1151,9 @@ include (
           thread_members = [];
           emojis = [];
           stickers = [];
+          scheduled_event = None;
+          auto_moderation_rule = None;
+          integration = None;
         }
       in
       let with_guild guild_id =
@@ -1167,6 +1256,60 @@ include (
       | Discord_private.P_event.User_update -> (
           match json |> member "id" |> to_string_option with
           | Some user_id -> { empty with user = find_user c user_id }
+          | None -> empty)
+      | Discord_private.P_event.Guild_scheduled_event_update -> (
+          match
+            ( json |> member "guild_id" |> to_string_option,
+              json |> member "id" |> to_string_option )
+          with
+          | Some guild_id, Some event_id ->
+              {
+                empty with
+                scheduled_event = find_scheduled_event c ~guild_id ~event_id;
+              }
+          | _ -> empty)
+      | Discord_private.P_event.Guild_scheduled_event_user_add
+      | Discord_private.P_event.Guild_scheduled_event_user_remove -> (
+          match
+            ( json |> member "guild_id" |> to_string_option,
+              json |> member "guild_scheduled_event_id" |> to_string_option,
+              json |> member "user_id" |> to_string_option )
+          with
+          | Some guild_id, Some event_id, Some user_id ->
+              {
+                empty with
+                scheduled_event = find_scheduled_event c ~guild_id ~event_id;
+                user = find_user c user_id;
+              }
+          | _ -> empty)
+      | Discord_private.P_event.Auto_moderation_rule_update
+      | Discord_private.P_event.Auto_moderation_rule_delete -> (
+          match
+            ( json |> member "guild_id" |> to_string_option,
+              json |> member "id" |> to_string_option )
+          with
+          | Some guild_id, Some rule_id ->
+              {
+                empty with
+                auto_moderation_rule =
+                  find_auto_moderation_rule c ~guild_id ~rule_id;
+              }
+          | _ -> empty)
+      | Discord_private.P_event.Integration_update
+      | Discord_private.P_event.Integration_delete -> (
+          match
+            ( json |> member "guild_id" |> to_string_option,
+              json |> member "id" |> to_string_option )
+          with
+          | Some guild_id, Some integration_id ->
+              {
+                empty with
+                integration = find_integration c ~guild_id ~integration_id;
+              }
+          | _ -> empty)
+      | Discord_private.P_event.Guild_audit_log_entry_create -> (
+          match json |> member "guild_id" |> to_string_option with
+          | Some guild_id -> { empty with guild = find_guild c guild_id }
           | None -> empty)
       | _ -> empty
 
@@ -1519,26 +1662,115 @@ include (
     let on_resumed (c : t) (f : t -> unit) : unit =
       add_untyped_handler c Discord_private.P_event.Resumed f
 
-    let on_application_command_permissions_update (c : t) (f : t -> unit) : unit
+    let on_application_command_permissions_update (c : t)
+        (f :
+          t -> Event_payload.Application_command_permissions_update.t -> unit) :
+        unit =
+      add_handler c
+        Discord_private.P_event.Application_command_permissions_update
+        (fun t _ json ->
+          let open Yojson.Safe.Util in
+          match
+            ( json |> member "id" |> to_string_option,
+              json |> member "application_id" |> to_string_option,
+              json |> member "guild_id" |> to_string_option )
+          with
+          | Some id, Some application_id, Some guild_id ->
+              let permissions =
+                match json |> member "permissions" with
+                | `List l ->
+                    List.filter_map
+                      (fun p ->
+                        match p |> member "id" |> to_string_option with
+                        | Some permission_id ->
+                            Some
+                              ({
+                                 id = permission_id;
+                                 type_ =
+                                   p |> member "type" |> to_int_option
+                                   |> Option.value ~default:0;
+                                 permission =
+                                   Permission.of_yojson
+                                     (p |> member "permission");
+                               }
+                                : Event_payload
+                                  .Application_command_permissions_update
+                                  .permission)
+                        | None -> None)
+                      l
+                | _ -> []
+              in
+              f t { id; application_id; guild_id; permissions }
+          | _ ->
+              log_decode_error c "APPLICATION_COMMAND_PERMISSIONS_UPDATE"
+                "missing ids")
+
+    let on_auto_moderation_rule_create (c : t)
+        (f : t -> Auto_moderation.t -> unit) : unit =
+      add_decoded_handler c Discord_private.P_event.Auto_moderation_rule_create
+        Auto_moderation.of_yojson f
+
+    let on_auto_moderation_rule_update (c : t)
+        (f : t -> Auto_moderation.t option -> Auto_moderation.t -> unit) : unit
         =
-      add_untyped_handler c
-        Discord_private.P_event.Application_command_permissions_update f
+      add_handler c Discord_private.P_event.Auto_moderation_rule_update
+        (fun t snap json ->
+          match Auto_moderation.of_yojson json with
+          | Ok rule -> f t snap.auto_moderation_rule rule
+          | Error msg -> log_decode_error c "AUTO_MODERATION_RULE_UPDATE" msg)
 
-    let on_auto_moderation_rule_create (c : t) (f : t -> unit) : unit =
-      add_untyped_handler c Discord_private.P_event.Auto_moderation_rule_create
-        f
+    let on_auto_moderation_rule_delete (c : t)
+        (f : t -> Event_payload.Auto_moderation_rule_delete.t -> unit) : unit =
+      add_handler c Discord_private.P_event.Auto_moderation_rule_delete
+        (fun t snap json ->
+          let open Yojson.Safe.Util in
+          match
+            ( json |> member "guild_id" |> to_string_option,
+              json |> member "id" |> to_string_option )
+          with
+          | Some guild_id, Some rule_id ->
+              f t { guild_id; rule_id; rule = snap.auto_moderation_rule }
+          | _ -> log_decode_error c "AUTO_MODERATION_RULE_DELETE" "missing ids")
 
-    let on_auto_moderation_rule_update (c : t) (f : t -> unit) : unit =
-      add_untyped_handler c Discord_private.P_event.Auto_moderation_rule_update
-        f
-
-    let on_auto_moderation_rule_delete (c : t) (f : t -> unit) : unit =
-      add_untyped_handler c Discord_private.P_event.Auto_moderation_rule_delete
-        f
-
-    let on_auto_moderation_action_execution (c : t) (f : t -> unit) : unit =
-      add_untyped_handler c
-        Discord_private.P_event.Auto_moderation_action_execution f
+    let on_auto_moderation_action_execution (c : t)
+        (f : t -> Event_payload.Auto_moderation_action_execution.t -> unit) :
+        unit =
+      add_handler c Discord_private.P_event.Auto_moderation_action_execution
+        (fun t _ json ->
+          let open Yojson.Safe.Util in
+          match
+            ( json |> member "guild_id" |> to_string_option,
+              json |> member "rule_id" |> to_string_option,
+              json |> member "user_id" |> to_string_option,
+              Auto_moderation.action_of_yojson (json |> member "action") )
+          with
+          | Some guild_id, Some rule_id, Some user_id, Ok action ->
+              let rule_trigger_type =
+                json |> member "rule_trigger_type" |> to_int_option
+                |> Option.value ~default:0
+              in
+              f t
+                {
+                  guild_id;
+                  rule_id;
+                  rule_trigger_type;
+                  user_id;
+                  action;
+                  channel_id = json |> member "channel_id" |> to_string_option;
+                  message_id = json |> member "message_id" |> to_string_option;
+                  alert_system_message_id =
+                    json |> member "alert_system_message_id" |> to_string_option;
+                  content = json |> member "content" |> to_string_option;
+                  matched_keyword =
+                    json |> member "matched_keyword" |> to_string_option;
+                  matched_content =
+                    json |> member "matched_content" |> to_string_option;
+                }
+          | _, _, _, Error msg ->
+              log_decode_error c "AUTO_MODERATION_ACTION_EXECUTION" msg
+          | _ ->
+              log_decode_error c "AUTO_MODERATION_ACTION_EXECUTION"
+                "missing ids")
 
     let on_channel_create (c : t) (f : t -> Channel.t -> unit) : unit =
       add_decoded_handler c Discord_private.P_event.Channel_create
@@ -1721,9 +1953,22 @@ include (
               f t { id; unavailable; guild = snap.guild }
           | None -> ())
 
-    let on_guild_audit_log_entry_create (c : t) (f : t -> unit) : unit =
-      add_untyped_handler c Discord_private.P_event.Guild_audit_log_entry_create
-        f
+    let on_guild_audit_log_entry_create (c : t)
+        (f : t -> Event_payload.Guild_audit_log_entry.t -> unit) : unit =
+      add_handler c Discord_private.P_event.Guild_audit_log_entry_create
+        (fun t snap json ->
+          let open Yojson.Safe.Util in
+          match
+            ( json |> member "guild_id" |> to_string_option,
+              Audit_log.entry_of_yojson json )
+          with
+          | Some guild_id, Ok entry ->
+              f t { guild_id; entry; guild = snap.guild }
+          | Some _, Error msg ->
+              log_decode_error c "GUILD_AUDIT_LOG_ENTRY_CREATE" msg
+          | None, _ ->
+              log_decode_error c "GUILD_AUDIT_LOG_ENTRY_CREATE"
+                "missing guild_id")
 
     let on_guild_ban_add (c : t) (f : t -> string -> Guild_ban.t -> unit) : unit
         =
@@ -1903,25 +2148,63 @@ include (
               f t { guild_id; role_id; role = snap.role }
           | _ -> ())
 
-    let on_guild_scheduled_event_create (c : t) (f : t -> unit) : unit =
-      add_untyped_handler c Discord_private.P_event.Guild_scheduled_event_create
-        f
+    let on_guild_scheduled_event_create (c : t)
+        (f : t -> Guild_scheduled_event.t -> unit) : unit =
+      add_decoded_handler c Discord_private.P_event.Guild_scheduled_event_create
+        Guild_scheduled_event.of_yojson f
 
-    let on_guild_scheduled_event_update (c : t) (f : t -> unit) : unit =
-      add_untyped_handler c Discord_private.P_event.Guild_scheduled_event_update
-        f
+    let on_guild_scheduled_event_update (c : t)
+        (f :
+          t -> Guild_scheduled_event.t option -> Guild_scheduled_event.t -> unit)
+        : unit =
+      add_handler c Discord_private.P_event.Guild_scheduled_event_update
+        (fun t snap json ->
+          match Guild_scheduled_event.of_yojson json with
+          | Ok event -> f t snap.scheduled_event event
+          | Error msg -> log_decode_error c "GUILD_SCHEDULED_EVENT_UPDATE" msg)
 
-    let on_guild_scheduled_event_delete (c : t) (f : t -> unit) : unit =
-      add_untyped_handler c Discord_private.P_event.Guild_scheduled_event_delete
-        f
+    let on_guild_scheduled_event_delete (c : t)
+        (f : t -> Guild_scheduled_event.t -> unit) : unit =
+      add_decoded_handler c Discord_private.P_event.Guild_scheduled_event_delete
+        Guild_scheduled_event.of_yojson f
 
-    let on_guild_scheduled_event_user_add (c : t) (f : t -> unit) : unit =
-      add_untyped_handler c
-        Discord_private.P_event.Guild_scheduled_event_user_add f
+    let scheduled_event_user_payload (snap : snapshot) (json : Yojson.Safe.t) :
+        Event_payload.Guild_scheduled_event_user.t option =
+      let open Yojson.Safe.Util in
+      match
+        ( json |> member "guild_id" |> to_string_option,
+          json |> member "guild_scheduled_event_id" |> to_string_option,
+          json |> member "user_id" |> to_string_option )
+      with
+      | Some guild_id, Some event_id, Some user_id ->
+          Some
+            {
+              guild_id;
+              event_id;
+              user_id;
+              event = snap.scheduled_event;
+              user = snap.user;
+            }
+      | _ -> None
 
-    let on_guild_scheduled_event_user_remove (c : t) (f : t -> unit) : unit =
-      add_untyped_handler c
-        Discord_private.P_event.Guild_scheduled_event_user_remove f
+    let on_guild_scheduled_event_user_add (c : t)
+        (f : t -> Event_payload.Guild_scheduled_event_user.t -> unit) : unit =
+      add_handler c Discord_private.P_event.Guild_scheduled_event_user_add
+        (fun t snap json ->
+          match scheduled_event_user_payload snap json with
+          | Some payload -> f t payload
+          | None ->
+              log_decode_error c "GUILD_SCHEDULED_EVENT_USER_ADD" "missing ids")
+
+    let on_guild_scheduled_event_user_remove (c : t)
+        (f : t -> Event_payload.Guild_scheduled_event_user.t -> unit) : unit =
+      add_handler c Discord_private.P_event.Guild_scheduled_event_user_remove
+        (fun t snap json ->
+          match scheduled_event_user_payload snap json with
+          | Some payload -> f t payload
+          | None ->
+              log_decode_error c "GUILD_SCHEDULED_EVENT_USER_REMOVE"
+                "missing ids")
 
     let on_guild_soundboard_sound_create (c : t) (f : t -> unit) : unit =
       add_untyped_handler c
@@ -1942,17 +2225,38 @@ include (
     let on_soundboard_sounds (c : t) (f : t -> unit) : unit =
       add_untyped_handler c Discord_private.P_event.Soundboard_sounds f
 
-    let on_integration_create (c : t) (f : t -> unit) : unit =
-      add_untyped_handler c Discord_private.P_event.Integration_create f
+    let on_integration_create (c : t) (f : t -> Integration.t -> unit) : unit =
+      add_decoded_handler c Discord_private.P_event.Integration_create
+        Integration.of_yojson f
 
-    let on_integration_update (c : t) (f : t -> unit) : unit =
-      add_untyped_handler c Discord_private.P_event.Integration_update f
+    let on_integration_update (c : t)
+        (f : t -> Integration.t option -> Integration.t -> unit) : unit =
+      add_handler c Discord_private.P_event.Integration_update
+        (fun t snap json ->
+          match Integration.of_yojson json with
+          | Ok integration -> f t snap.integration integration
+          | Error msg -> log_decode_error c "INTEGRATION_UPDATE" msg)
 
-    let on_integration_delete (c : t) (f : t -> unit) : unit =
-      add_untyped_handler c Discord_private.P_event.Integration_delete f
+    let on_integration_delete (c : t)
+        (f : t -> Event_payload.Integration_delete.t -> unit) : unit =
+      add_handler c Discord_private.P_event.Integration_delete
+        (fun t snap json ->
+          let open Yojson.Safe.Util in
+          match
+            ( json |> member "id" |> to_string_option,
+              json |> member "guild_id" |> to_string_option )
+          with
+          | Some id, Some guild_id ->
+              let application_id =
+                json |> member "application_id" |> to_string_option
+              in
+              f t
+                { id; guild_id; application_id; integration = snap.integration }
+          | _ -> log_decode_error c "INTEGRATION_DELETE" "missing ids")
 
-    let on_interaction_create (c : t) (f : t -> unit) : unit =
-      add_untyped_handler c Discord_private.P_event.Interaction_create f
+    let on_interaction_create (c : t) (f : t -> Interaction.t -> unit) : unit =
+      add_decoded_handler c Discord_private.P_event.Interaction_create
+        Interaction.of_yojson f
 
     let on_invite_create (c : t)
         (f : t -> Event_payload.Invite_create.t -> unit) : unit =
@@ -2144,6 +2448,8 @@ include (
         stage_instances_mutex = Eio.Mutex.create ();
         auto_moderation_rules = Hashtbl.create 0;
         auto_moderation_rules_mutex = Eio.Mutex.create ();
+        integrations = Hashtbl.create 0;
+        integrations_mutex = Eio.Mutex.create ();
         decode_errors = Atomic.make [];
         shards = Hashtbl.create 0;
         shards_mutex = Eio.Mutex.create ();
