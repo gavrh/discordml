@@ -3,3 +3,7 @@ root = true
 [*.{ml,mli}]
 indent_style = space
 indent_size = 2
+
+[*.{c}]
+indent_style = space
+indent_size = 4
