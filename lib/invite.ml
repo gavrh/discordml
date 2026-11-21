@@ -51,6 +51,21 @@ module type Invite = sig
   val equal : t -> t -> bool
   val show : t -> string
   val of_yojson : Yojson.Safe.t -> (t, string) result
+
+  val create :
+    Rest.t ->
+    channel_id:string ->
+    ?max_age:int ->
+    ?max_uses:int ->
+    ?temporary:bool ->
+    ?unique:bool ->
+    ?target_type:int ->
+    ?target_user_id:string ->
+    unit ->
+    t
+
+  val fetch : Rest.t -> string -> t
+  val delete : Rest.t -> string -> unit
 end
 
 include (
@@ -211,5 +226,50 @@ include (
       | Type_error (msg, _) -> Error msg
       | Undefined (msg, _) -> Error msg
       | Failure msg -> Error msg
+
+    let decode (path : string) (resp : string) : t =
+      match of_yojson (Yojson.Safe.from_string resp) with
+      | Ok i -> i
+      | Error msg -> failwith (path ^ ": " ^ msg)
+
+    let opt (name : string) (value : 'a option) (f : 'a -> Yojson.Safe.t) =
+      Option.map (fun v -> (name, f v)) value
+
+    let create (rest : Rest.t) ~(channel_id : string) ?max_age ?max_uses
+        ?temporary ?unique ?target_type ?target_user_id () : t =
+      let path = "/channels/" ^ channel_id ^ "/invites" in
+      let body =
+        `Assoc
+          (List.filter_map
+             (fun x -> x)
+             [
+               opt "max_age" max_age (fun v -> `Int v);
+               opt "max_uses" max_uses (fun v -> `Int v);
+               opt "temporary" temporary (fun v -> `Bool v);
+               opt "unique" unique (fun v -> `Bool v);
+               opt "target_type" target_type (fun v -> `Int v);
+               opt "target_user_id" target_user_id (fun v -> `String v);
+             ])
+        |> Yojson.Safe.to_string
+      in
+      let code, resp = Rest.request rest ~body Rest.Post path in
+      if code < 200 || code >= 300 then
+        failwith (Printf.sprintf "POST %s: HTTP %d: %s" path code resp);
+      decode path resp
+
+    let fetch (rest : Rest.t) (code : string) : t =
+      let path =
+        P_query.path ("/invites/" ^ code) [ ("with_counts", "true") ]
+      in
+      let status, resp = Rest.request rest Rest.Get path in
+      if status < 200 || status >= 300 then
+        failwith (Printf.sprintf "GET %s: HTTP %d: %s" path status resp);
+      decode path resp
+
+    let delete (rest : Rest.t) (code : string) : unit =
+      let path = "/invites/" ^ code in
+      let status, resp = Rest.request rest Rest.Delete path in
+      if status < 200 || status >= 300 then
+        failwith (Printf.sprintf "DELETE %s: HTTP %d: %s" path status resp)
   end :
     Invite)
