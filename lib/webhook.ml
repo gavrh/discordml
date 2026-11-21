@@ -33,6 +33,38 @@ module type Webhook = sig
   val equal : t -> t -> bool
   val show : t -> string
   val of_yojson : Yojson.Safe.t -> (t, string) result
+
+  val create :
+    Rest.t -> channel_id:string -> name:string -> ?avatar:string -> unit -> t
+
+  val fetch : Rest.t -> string -> t
+  val list : Rest.t -> channel_id:string -> t list
+
+  val edit :
+    Rest.t ->
+    t ->
+    ?name:string ->
+    ?avatar:string ->
+    ?channel_id:string ->
+    unit ->
+    t
+
+  val delete : Rest.t -> t -> unit
+
+  val execute :
+    Rest.t ->
+    t ->
+    ?content:string ->
+    ?username:string ->
+    ?avatar_url:string ->
+    ?tts:bool ->
+    ?embeds:Yojson.Safe.t list ->
+    ?components:Yojson.Safe.t list ->
+    ?files:Attachment.t list ->
+    ?thread_id:string ->
+    ?wait:bool ->
+    unit ->
+    Message.t option
 end
 
 include (
@@ -112,5 +144,130 @@ include (
       | Type_error (msg, _) -> Error msg
       | Undefined (msg, _) -> Error msg
       | Failure msg -> Error msg
+
+    let decode (path : string) (resp : string) : t =
+      match of_yojson (Yojson.Safe.from_string resp) with
+      | Ok w -> w
+      | Error msg -> failwith (path ^ ": " ^ msg)
+
+    let decode_list (path : string) (resp : string) : t list =
+      Yojson.Safe.from_string resp
+      |> Yojson.Safe.Util.to_list
+      |> List.map (fun json ->
+          match of_yojson json with
+          | Ok w -> w
+          | Error msg -> failwith (path ^ ": " ^ msg))
+
+    let opt (name : string) (value : 'a option) (f : 'a -> Yojson.Safe.t) =
+      Option.map (fun v -> (name, f v)) value
+
+    let create (rest : Rest.t) ~(channel_id : string) ~(name : string) ?avatar
+        () : t =
+      let path = "/channels/" ^ channel_id ^ "/webhooks" in
+      let body =
+        `Assoc
+          (("name", `String name)
+          :: List.filter_map
+               (fun x -> x)
+               [ opt "avatar" avatar (fun v -> `String v) ])
+        |> Yojson.Safe.to_string
+      in
+      let code, resp = Rest.request rest ~body Rest.Post path in
+      if code < 200 || code >= 300 then
+        failwith (Printf.sprintf "POST %s: HTTP %d: %s" path code resp);
+      decode path resp
+
+    let fetch (rest : Rest.t) (id : string) : t =
+      let path = "/webhooks/" ^ id in
+      let code, resp = Rest.request rest Rest.Get path in
+      if code < 200 || code >= 300 then
+        failwith (Printf.sprintf "GET %s: HTTP %d: %s" path code resp);
+      decode path resp
+
+    let list (rest : Rest.t) ~(channel_id : string) : t list =
+      let path = "/channels/" ^ channel_id ^ "/webhooks" in
+      let code, resp = Rest.request rest Rest.Get path in
+      if code < 200 || code >= 300 then
+        failwith (Printf.sprintf "GET %s: HTTP %d: %s" path code resp);
+      decode_list path resp
+
+    let edit (rest : Rest.t) (w : t) ?name ?avatar ?channel_id () : t =
+      let path = "/webhooks/" ^ w.id in
+      let body =
+        `Assoc
+          (List.filter_map
+             (fun x -> x)
+             [
+               opt "name" name (fun v -> `String v);
+               opt "avatar" avatar (fun v -> `String v);
+               opt "channel_id" channel_id (fun v -> `String v);
+             ])
+        |> Yojson.Safe.to_string
+      in
+      let code, resp = Rest.request rest ~body Rest.Patch path in
+      if code < 200 || code >= 300 then
+        failwith (Printf.sprintf "PATCH %s: HTTP %d: %s" path code resp);
+      decode path resp
+
+    let delete (rest : Rest.t) (w : t) : unit =
+      let path = "/webhooks/" ^ w.id in
+      let code, resp = Rest.request rest Rest.Delete path in
+      if code < 200 || code >= 300 then
+        failwith (Printf.sprintf "DELETE %s: HTTP %d: %s" path code resp)
+
+    let execute (rest : Rest.t) (w : t) ?content ?username ?avatar_url ?tts
+        ?embeds ?components ?files ?thread_id ?(wait = false) () :
+        Message.t option =
+      let token =
+        match w.token with
+        | Some token -> token
+        | None -> failwith ("webhook " ^ w.id ^ " has no token")
+      in
+      let params =
+        (if wait then [ ("wait", "true") ] else [])
+        @ (match thread_id with Some id -> [ ("thread_id", id) ] | None -> [])
+        @
+        match components with
+        | Some _ -> [ ("with_components", "true") ]
+        | None -> []
+      in
+      let path = P_query.path ("/webhooks/" ^ w.id ^ "/" ^ token) params in
+      let display_path =
+        P_query.path ("/webhooks/" ^ w.id ^ "/<redacted>") params
+      in
+      let body =
+        `Assoc
+          (List.filter_map
+             (fun x -> x)
+             [
+               opt "content" content (fun v -> `String v);
+               opt "username" username (fun v -> `String v);
+               opt "avatar_url" avatar_url (fun v -> `String v);
+               opt "tts" tts (fun v -> `Bool v);
+               opt "embeds" embeds (fun v -> `List v);
+               opt "components" components (fun v -> `List v);
+             ])
+        |> Yojson.Safe.to_string
+      in
+      let files =
+        match files with
+        | None -> []
+        | Some attachments ->
+            List.map
+              (fun (a : Attachment.t) ->
+                ( Attachment.name a,
+                  Attachment.content a,
+                  Attachment.content_type a ))
+              attachments
+      in
+      let code, resp = Rest.request rest ~body ~files Rest.Post path in
+      if code < 200 || code >= 300 then
+        failwith (Printf.sprintf "POST %s: HTTP %d: %s" display_path code resp);
+      if not wait then None
+      else
+        Some
+          (match Message.of_yojson (Yojson.Safe.from_string resp) with
+          | Ok m -> m
+          | Error msg -> failwith (display_path ^ ": " ^ msg))
   end :
     Webhook)

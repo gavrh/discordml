@@ -26,6 +26,18 @@ module type Subscription = sig
   val equal : t -> t -> bool
   val show : t -> string
   val of_yojson : Yojson.Safe.t -> (t, string) result
+
+  val list :
+    Rest.t ->
+    sku_id:string ->
+    user_id:string ->
+    ?before:string ->
+    ?after:string ->
+    ?limit:int ->
+    unit ->
+    t list
+
+  val fetch : Rest.t -> sku_id:string -> subscription_id:string -> t
 end
 
 include (
@@ -84,5 +96,43 @@ include (
       with
       | Type_error (msg, _) -> Error msg
       | Undefined (msg, _) -> Error msg
+
+    let decode (path : string) (resp : string) : t =
+      match of_yojson (Yojson.Safe.from_string resp) with
+      | Ok subscription -> subscription
+      | Error msg -> failwith (path ^ ": " ^ msg)
+
+    let decode_list (path : string) (resp : string) : t list =
+      Yojson.Safe.from_string resp
+      |> Yojson.Safe.Util.to_list
+      |> List.map (fun json ->
+          match of_yojson json with
+          | Ok subscription -> subscription
+          | Error msg -> failwith (path ^ ": " ^ msg))
+
+    let list (rest : Rest.t) ~(sku_id : string) ~(user_id : string) ?before
+        ?after ?limit () : t list =
+      let params =
+        ("user_id", user_id)
+        :: ((match before with Some v -> [ ("before", v) ] | None -> [])
+           @ (match after with Some v -> [ ("after", v) ] | None -> [])
+           @
+           match limit with
+           | Some v -> [ ("limit", string_of_int v) ]
+           | None -> [])
+      in
+      let path = P_query.path ("/skus/" ^ sku_id ^ "/subscriptions") params in
+      let code, resp = Rest.request rest Rest.Get path in
+      if code < 200 || code >= 300 then
+        failwith (Printf.sprintf "GET %s: HTTP %d: %s" path code resp);
+      decode_list path resp
+
+    let fetch (rest : Rest.t) ~(sku_id : string) ~(subscription_id : string) : t
+        =
+      let path = "/skus/" ^ sku_id ^ "/subscriptions/" ^ subscription_id in
+      let code, resp = Rest.request rest Rest.Get path in
+      if code < 200 || code >= 300 then
+        failwith (Printf.sprintf "GET %s: HTTP %d: %s" path code resp);
+      decode path resp
   end :
     Subscription)

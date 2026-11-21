@@ -13,6 +13,27 @@ module type Emoji = sig
   val pp : Format.formatter -> t -> unit
   val equal : t -> t -> bool
   val show : t -> string
+  val list : Rest.t -> guild_id:string -> t list
+
+  val create :
+    Rest.t ->
+    guild_id:string ->
+    name:string ->
+    image:string ->
+    ?roles:string list ->
+    unit ->
+    t
+
+  val edit :
+    Rest.t ->
+    guild_id:string ->
+    emoji_id:string ->
+    ?name:string ->
+    ?roles:string list ->
+    unit ->
+    t
+
+  val delete : Rest.t -> guild_id:string -> emoji_id:string -> unit
 end
 
 include (
@@ -74,5 +95,73 @@ include (
       with
       | Type_error (msg, _) -> Error msg
       | Undefined (msg, _) -> Error msg
+
+    let decode (path : string) (resp : string) : t =
+      match of_yojson (Yojson.Safe.from_string resp) with
+      | Ok emoji -> emoji
+      | Error msg -> failwith (path ^ ": " ^ msg)
+
+    let decode_list (path : string) (resp : string) : t list =
+      Yojson.Safe.from_string resp
+      |> Yojson.Safe.Util.to_list
+      |> List.map (fun json ->
+          match of_yojson json with
+          | Ok emoji -> emoji
+          | Error msg -> failwith (path ^ ": " ^ msg))
+
+    let opt (name : string) (value : 'a option) (f : 'a -> Yojson.Safe.t) =
+      Option.map (fun v -> (name, f v)) value
+
+    let strings (values : string list) : Yojson.Safe.t =
+      `List (List.map (fun value -> `String value) values)
+
+    let list (rest : Rest.t) ~(guild_id : string) : t list =
+      let path = "/guilds/" ^ guild_id ^ "/emojis" in
+      let code, resp = Rest.request rest Rest.Get path in
+      if code < 200 || code >= 300 then
+        failwith (Printf.sprintf "GET %s: HTTP %d: %s" path code resp);
+      decode_list path resp
+
+    let create (rest : Rest.t) ~(guild_id : string) ~(name : string)
+        ~(image : string) ?roles () : t =
+      let path = "/guilds/" ^ guild_id ^ "/emojis" in
+      let body =
+        `Assoc
+          (("name", `String name)
+          :: ("image", `String image)
+          :: List.filter_map
+               (fun x -> x)
+               [ opt "roles" roles (fun v -> strings v) ])
+        |> Yojson.Safe.to_string
+      in
+      let code, resp = Rest.request rest ~body Rest.Post path in
+      if code < 200 || code >= 300 then
+        failwith (Printf.sprintf "POST %s: HTTP %d: %s" path code resp);
+      decode path resp
+
+    let edit (rest : Rest.t) ~(guild_id : string) ~(emoji_id : string) ?name
+        ?roles () : t =
+      let path = "/guilds/" ^ guild_id ^ "/emojis/" ^ emoji_id in
+      let body =
+        `Assoc
+          (List.filter_map
+             (fun x -> x)
+             [
+               opt "name" name (fun v -> `String v);
+               opt "roles" roles (fun v -> strings v);
+             ])
+        |> Yojson.Safe.to_string
+      in
+      let code, resp = Rest.request rest ~body Rest.Patch path in
+      if code < 200 || code >= 300 then
+        failwith (Printf.sprintf "PATCH %s: HTTP %d: %s" path code resp);
+      decode path resp
+
+    let delete (rest : Rest.t) ~(guild_id : string) ~(emoji_id : string) : unit
+        =
+      let path = "/guilds/" ^ guild_id ^ "/emojis/" ^ emoji_id in
+      let code, resp = Rest.request rest Rest.Delete path in
+      if code < 200 || code >= 300 then
+        failwith (Printf.sprintf "DELETE %s: HTTP %d: %s" path code resp)
   end :
     Emoji)

@@ -22,6 +22,9 @@ module type Rest = sig
     ?headers:(string * string) list ->
     ?body:string ->
     ?files:(string * string * string option) list ->
+    ?file_field:string ->
+    ?content_type:string ->
+    ?authorization:string ->
     meth ->
     string ->
     int * string
@@ -60,8 +63,8 @@ include (
       | Patch -> "PATCH"
       | Delete -> "DELETE"
 
-    let request (t : t) ?headers ?body ?files (meth : meth) (path : string) :
-        int * string =
+    let request (t : t) ?headers ?body ?files ?file_field ?content_type
+        ?authorization (meth : meth) (path : string) : int * string =
       let method_name = meth_name meth in
       let route = P_rate_limit.route_key ~meth:method_name path in
       let rec attempt n =
@@ -70,7 +73,8 @@ include (
         let bucket = P_rate_limit.reserve t.rate_limit route in
         let resp, body =
           match
-            P_http.send t.http ?headers ?body ?files ~meth:method_name path
+            P_http.send t.http ?headers ?body ?files ?file_field ?content_type
+              ?authorization ~meth:method_name path
           with
           | response -> response
           | exception exn ->
