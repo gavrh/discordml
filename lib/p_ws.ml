@@ -36,6 +36,7 @@ module type Ws = sig
 
   val close_code_of_int : int -> close_code
   val int_of_close_code : close_code -> int
+  val show_close_code : close_code -> string
   val gateway_version : string
   val encoding : string
   val gateway : string
@@ -309,6 +310,37 @@ include (
       | Invalid_intents -> 4013
       | Disallowed_intents -> 4014
       | Unknown_code n -> n
+
+    let show_close_code = function
+      | Normal -> "normal"
+      | Going_away -> "going away"
+      | Protocol_error -> "protocol error"
+      | Unsupported_data -> "unsupported data"
+      | No_status -> "no status"
+      | Abnormal -> "abnormal"
+      | Invalid_payload -> "invalid payload"
+      | Policy_violation -> "policy violation"
+      | Message_too_big -> "message too big"
+      | Mandatory_extension -> "mandatory extension"
+      | Internal_error -> "internal error"
+      | Service_restart -> "service restart"
+      | Try_again_later -> "try again later"
+      | Tls_handshake -> "tls handshake"
+      | Unknown_error -> "unknown error"
+      | Unknown_opcode -> "unknown opcode"
+      | Decode_error -> "decode error"
+      | Not_authenticated -> "not authenticated"
+      | Authentication_failed -> "authentication failed"
+      | Already_authenticated -> "already authenticated"
+      | Invalid_seq -> "invalid seq"
+      | Rate_limited -> "rate limited"
+      | Session_timed_out -> "session timed out"
+      | Invalid_shard -> "invalid shard"
+      | Sharding_required -> "sharding required"
+      | Invalid_api_version -> "invalid api version"
+      | Invalid_intents -> "invalid intents"
+      | Disallowed_intents -> "disallowed intents"
+      | Unknown_code n -> "unknown code " ^ string_of_int n
 
     type message = Data of string | Closed of close_code * string
 

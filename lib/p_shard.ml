@@ -11,6 +11,18 @@ module type Shard = sig
     t ->
     unit
 
+  val send : t -> Yojson.Safe.t -> unit
+
+  val voice_state_update :
+    t ->
+    guild_id:string ->
+    channel_id:string option ->
+    self_mute:bool ->
+    self_deaf:bool ->
+    unit
+
+  val session_id : t -> string option
+  val shard_id : guild_id:string -> num_shards:int -> int
   val show : t -> string
 end
 
@@ -70,6 +82,8 @@ include (
       mutable session_id : string option;
       mutable resume_gateway_url : string option;
       mutable established : bool;
+      mutable conn : P_ws.t option; [@opaque]
+      send_mutex : Eio.Mutex.t; [@opaque]
     }
     [@@deriving show]
 
@@ -87,7 +101,42 @@ include (
         session_id = None;
         resume_gateway_url = None;
         established = false;
+        conn = None;
+        send_mutex = Eio.Mutex.create ();
       }
+
+    let session_id (t : t) : string option = t.session_id
+
+    let shard_id ~(guild_id : string) ~(num_shards : int) : int =
+      if num_shards <= 0 then 0
+      else
+        let guild_id = try Int64.of_string guild_id with Failure _ -> 0L in
+        Int64.to_int
+          (Int64.rem
+             (Int64.shift_right_logical guild_id 22)
+             (Int64.of_int num_shards))
+
+    let send (t : t) (payload : Yojson.Safe.t) : unit =
+      Eio.Mutex.use_rw ~protect:true t.send_mutex (fun () ->
+          match t.conn with
+          | Some conn when not (P_ws.is_closed conn) ->
+              P_ws.send_text conn (Yojson.Safe.to_string payload)
+          | _ -> ())
+
+    let voice_state_update (t : t) ~(guild_id : string)
+        ~(channel_id : string option) ~(self_mute : bool) ~(self_deaf : bool) :
+        unit =
+      let d =
+        `Assoc
+          [
+            ("guild_id", `String guild_id);
+            ( "channel_id",
+              match channel_id with Some id -> `String id | None -> `Null );
+            ("self_mute", `Bool self_mute);
+            ("self_deaf", `Bool self_deaf);
+          ]
+      in
+      send t (`Assoc [ ("op", `Int (int_of_op Voice_state_update)); ("d", d) ])
 
     let read_hello (conn : P_ws.t) (t : t) : unit =
       match P_ws.recv conn with
@@ -273,12 +322,14 @@ include (
           try
             Eio.Switch.run @@ fun sw ->
             let conn = P_ws.connect ~sw ~net ~url:full in
+            t.conn <- Some conn;
             read_hello conn t;
             Eio.Fiber.fork ~sw (fun () -> heartbeat_loop clock sw conn t);
             resume conn t;
             listen dispatch conn t
           with exn -> Socket_closed (P_ws.Abnormal, Printexc.to_string exn)
         in
+        t.conn <- None;
         let resume_failed = resume_attempted && not t.established in
         let plan = plan_of_reason ~resume_failed reason in
         match plan.action with
