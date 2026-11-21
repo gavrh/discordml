@@ -14,6 +14,30 @@ module type Sticker = sig
   val pp : Format.formatter -> t -> unit
   val equal : t -> t -> bool
   val show : t -> string
+  val list : Rest.t -> guild_id:string -> t list
+
+  val create :
+    Rest.t ->
+    guild_id:string ->
+    name:string ->
+    tags:string ->
+    file:Attachment.t ->
+    ?description:string ->
+    unit ->
+    t
+
+  val edit :
+    Rest.t ->
+    guild_id:string ->
+    sticker_id:string ->
+    ?name:string ->
+    ?description:string ->
+    ?tags:string ->
+    unit ->
+    t
+
+  val delete : Rest.t -> guild_id:string -> sticker_id:string -> unit
+  val fetch : Rest.t -> string -> t
 end
 
 include (
@@ -64,5 +88,87 @@ include (
       with
       | Type_error (msg, _) -> Error msg
       | Undefined (msg, _) -> Error msg
+
+    let decode (path : string) (resp : string) : t =
+      match of_yojson (Yojson.Safe.from_string resp) with
+      | Ok sticker -> sticker
+      | Error msg -> failwith (path ^ ": " ^ msg)
+
+    let decode_list (path : string) (resp : string) : t list =
+      Yojson.Safe.from_string resp
+      |> Yojson.Safe.Util.to_list
+      |> List.map (fun json ->
+          match of_yojson json with
+          | Ok sticker -> sticker
+          | Error msg -> failwith (path ^ ": " ^ msg))
+
+    let opt (name : string) (value : 'a option) (f : 'a -> Yojson.Safe.t) =
+      Option.map (fun v -> (name, f v)) value
+
+    let list (rest : Rest.t) ~(guild_id : string) : t list =
+      let path = "/guilds/" ^ guild_id ^ "/stickers" in
+      let code, resp = Rest.request rest Rest.Get path in
+      if code < 200 || code >= 300 then
+        failwith (Printf.sprintf "GET %s: HTTP %d: %s" path code resp);
+      decode_list path resp
+
+    let create (rest : Rest.t) ~(guild_id : string) ~(name : string)
+        ~(tags : string) ~(file : Attachment.t) ?description () : t =
+      let path = "/guilds/" ^ guild_id ^ "/stickers" in
+      let body =
+        `Assoc
+          (("name", `String name)
+          :: ("tags", `String tags)
+          :: List.filter_map
+               (fun x -> x)
+               [ opt "description" description (fun v -> `String v) ])
+        |> Yojson.Safe.to_string
+      in
+      let files =
+        [
+          ( Attachment.name file,
+            Attachment.content file,
+            Attachment.content_type file );
+        ]
+      in
+      let code, resp =
+        Rest.request rest ~body ~files ~file_field:"file" Rest.Post path
+      in
+      if code < 200 || code >= 300 then
+        failwith (Printf.sprintf "POST %s: HTTP %d: %s" path code resp);
+      decode path resp
+
+    let edit (rest : Rest.t) ~(guild_id : string) ~(sticker_id : string) ?name
+        ?description ?tags () : t =
+      let path = "/guilds/" ^ guild_id ^ "/stickers/" ^ sticker_id in
+      let body =
+        `Assoc
+          (List.filter_map
+             (fun x -> x)
+             [
+               opt "name" name (fun v -> `String v);
+               opt "description" description (fun v -> `String v);
+               opt "tags" tags (fun v -> `String v);
+             ])
+        |> Yojson.Safe.to_string
+      in
+      let code, resp = Rest.request rest ~body Rest.Patch path in
+      if code < 200 || code >= 300 then
+        failwith (Printf.sprintf "PATCH %s: HTTP %d: %s" path code resp);
+      decode path resp
+
+    let delete (rest : Rest.t) ~(guild_id : string) ~(sticker_id : string) :
+        unit =
+      let path = "/guilds/" ^ guild_id ^ "/stickers/" ^ sticker_id in
+      let code, resp = Rest.request rest Rest.Delete path in
+      if code < 200 || code >= 300 then
+        failwith (Printf.sprintf "DELETE %s: HTTP %d: %s" path code resp)
+
+    let fetch (rest : Rest.t) (id : string) : t =
+      let path = "/stickers/" ^ id in
+      let code, resp = Rest.request rest Rest.Get path in
+      if code < 200 || code >= 300 then
+        failwith (Printf.sprintf "GET %s: HTTP %d: %s" path code resp);
+      decode path resp
   end :
     Sticker)
