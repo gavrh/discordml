@@ -22,6 +22,7 @@
     cohttp-eio
     http
     uri
+    cstruct
     tls
     tls-eio
     ca-certs

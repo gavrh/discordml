@@ -31,6 +31,16 @@ module type Client = sig
   val voice_state :
     t -> guild_id:string -> user_id:string -> Voice_state.t option
 
+  val join_voice :
+    ?self_mute:bool ->
+    ?self_deaf:bool ->
+    t ->
+    guild_id:string ->
+    channel_id:string ->
+    Voice.t
+
+  val leave_voice : t -> Voice.t -> unit
+  val voice_connection : t -> guild_id:string -> Voice.t option
   val entitlement : t -> string -> Entitlement.t option
   val subscription : t -> string -> Subscription.t option
 
@@ -389,6 +399,8 @@ include (
           [@printer
             fun fmt tbl -> Format.fprintf fmt "[ ...%d ]" (Hashtbl.length tbl)]
       voice_states_mutex : Eio.Mutex.t; [@opaque]
+      voice_connections : (string, Voice.t) Hashtbl.t; [@opaque]
+      voice_connections_mutex : Eio.Mutex.t; [@opaque]
       entitlements : (string, Entitlement.t) Hashtbl.t;
           [@printer
             fun fmt tbl -> Format.fprintf fmt "[ ...%d ]" (Hashtbl.length tbl)]
@@ -406,6 +418,9 @@ include (
           [@printer
             fun fmt tbl -> Format.fprintf fmt "[ ...%d ]" (Hashtbl.length tbl)]
       shards_mutex : Eio.Mutex.t; [@opaque]
+      mutable sw : Eio.Switch.t option; [@opaque]
+      mutable env : Eio_unix.Stdenv.base option; [@opaque]
+      mutable num_shards : int;
       handlers :
         ( Discord_private.P_event.t,
           (t -> snapshot -> Yojson.Safe.t -> unit) list )
@@ -527,6 +542,106 @@ include (
         Voice_state.t option =
       Eio.Mutex.use_ro c.voice_states_mutex (fun () ->
           Hashtbl.find_opt c.voice_states (guild_id, user_id))
+
+    let voice_connection (c : t) ~(guild_id : string) : Voice.t option =
+      Eio.Mutex.use_ro c.voice_connections_mutex (fun () ->
+          Hashtbl.find_opt c.voice_connections guild_id)
+
+    let shard_for_guild (c : t) (guild_id : string) :
+        Discord_private.P_shard.t option =
+      if c.num_shards <= 0 then None
+      else
+        let shard_id =
+          Discord_private.P_shard.shard_id ~guild_id ~num_shards:c.num_shards
+        in
+        Eio.Mutex.use_ro c.shards_mutex (fun () ->
+            Hashtbl.find_opt c.shards shard_id)
+
+    let join_voice ?(self_mute = false) ?(self_deaf = false) (c : t)
+        ~(guild_id : string) ~(channel_id : string) : Voice.t =
+      let sw =
+        match c.sw with Some sw -> sw | None -> failwith "client: not started"
+      in
+      let env =
+        match c.env with
+        | Some env -> env
+        | None -> failwith "client: not started"
+      in
+      let net = Eio.Stdenv.net env in
+      let clock = Eio.Stdenv.clock env in
+      let user_id =
+        match c.user with
+        | Some user -> User.id user
+        | None -> failwith "client: not ready"
+      in
+      let shard =
+        match shard_for_guild c guild_id with
+        | Some shard -> shard
+        | None -> failwith "client: shard not connected"
+      in
+      let send_gateway (payload : Yojson.Safe.t) : unit =
+        match shard_for_guild c guild_id with
+        | Some shard -> Discord_private.P_shard.send shard payload
+        | None -> ()
+      in
+      (match voice_connection c ~guild_id with
+      | Some old_voice ->
+          P_voice.leave old_voice;
+          Eio.Mutex.use_rw ~protect:true c.voice_connections_mutex (fun () ->
+              Hashtbl.remove c.voice_connections guild_id)
+      | None -> ());
+      let voice =
+        P_voice.create ~sw ~net ~clock ~user_id ~session_id:None ~guild_id
+          ~channel_id ~self_mute ~self_deaf ~send_gateway ()
+      in
+      Eio.Mutex.use_rw ~protect:true c.voice_connections_mutex (fun () ->
+          Hashtbl.replace c.voice_connections guild_id voice);
+      Discord_private.P_shard.voice_state_update shard ~guild_id
+        ~channel_id:(Some channel_id) ~self_mute ~self_deaf;
+      voice
+
+    let leave_voice (c : t) (voice : Voice.t) : unit =
+      let guild_id = Voice.guild_id voice in
+      P_voice.leave voice;
+      Eio.Mutex.use_rw ~protect:true c.voice_connections_mutex (fun () ->
+          Hashtbl.remove c.voice_connections guild_id)
+
+    let route_voice_event (c : t) (event : Discord_private.P_event.t)
+        (json : Yojson.Safe.t) : unit =
+      let open Yojson.Safe.Util in
+      match event with
+      | Discord_private.P_event.Voice_state_update -> (
+          match
+            ( json |> member "guild_id" |> to_string_option,
+              json |> member "user_id" |> to_string_option )
+          with
+          | Some guild_id, Some user_id -> (
+              match voice_connection c ~guild_id with
+              | Some voice -> (
+                  let channel_id =
+                    json |> member "channel_id" |> to_string_option
+                  in
+                  P_voice.on_user_update voice ~user_id ~channel_id;
+                  match
+                    (json |> member "session_id" |> to_string_option, c.user)
+                  with
+                  | Some session_id, Some user when User.id user = user_id ->
+                      P_voice.on_session voice session_id
+                  | _ -> ())
+              | None -> ())
+          | _ -> ())
+      | Discord_private.P_event.Voice_server_update -> (
+          match
+            ( json |> member "guild_id" |> to_string_option,
+              json |> member "token" |> to_string_option,
+              json |> member "endpoint" |> to_string_option )
+          with
+          | Some guild_id, Some token, Some endpoint when endpoint <> "" -> (
+              match voice_connection c ~guild_id with
+              | Some voice -> P_voice.on_server voice ~token ~endpoint
+              | None -> ())
+          | _ -> ())
+      | _ -> ()
 
     let entitlement (c : t) (id : string) : Entitlement.t option =
       Eio.Mutex.use_ro c.entitlements_mutex (fun () ->
@@ -3157,6 +3272,8 @@ include (
         unavailable_guilds_mutex = Eio.Mutex.create ();
         voice_states = Hashtbl.create 0;
         voice_states_mutex = Eio.Mutex.create ();
+        voice_connections = Hashtbl.create 0;
+        voice_connections_mutex = Eio.Mutex.create ();
         entitlements = Hashtbl.create 0;
         entitlements_mutex = Eio.Mutex.create ();
         subscriptions = Hashtbl.create 0;
@@ -3166,6 +3283,9 @@ include (
         decode_errors = Atomic.make [];
         shards = Hashtbl.create 0;
         shards_mutex = Eio.Mutex.create ();
+        sw = None;
+        env = None;
+        num_shards = 0;
         handlers = Atomic.make (Hashtbl.create 0);
         message_handlers = Atomic.make [];
         message_update_handlers = Atomic.make [];
@@ -3194,9 +3314,13 @@ include (
       let clock = Eio.Stdenv.clock env in
       Eio.Switch.run @@ fun sw ->
       c.token <- Some token;
+      c.sw <- Some sw;
+      c.env <- Some env;
+
       let rest = Rest.create ~sw ~net ~clock ~token in
       c.rest <- Some rest;
       let info = Rest.gateway_bot rest in
+      c.num_shards <- info.shards;
       if info.shards > info.sessions_remaining then
         Eio.Time.sleep clock info.sessions_reset_after;
       let open Yojson.Safe.Util in
@@ -3231,6 +3355,7 @@ include (
         | Some event -> (
             let snap = snapshot_event c event json in
             cache_event c event json;
+            route_voice_event c event json;
             (match event with
             | Discord_private.P_event.Ready -> (
                 match User.of_yojson (json |> member "user") with
