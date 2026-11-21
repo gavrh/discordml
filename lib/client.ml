@@ -201,6 +201,44 @@ module type Client = sig
 
   val on_interaction_create : t -> (t -> Interaction.t -> unit) -> unit
 
+  val on_command :
+    t ->
+    string ->
+    (t -> Interaction.t -> Interaction.Command_data.t -> unit) ->
+    unit
+
+  val on_autocomplete :
+    t ->
+    string ->
+    (t -> Interaction.t -> Interaction.Autocomplete_data.t -> unit) ->
+    unit
+
+  val on_component :
+    t ->
+    string ->
+    (t -> Interaction.t -> Interaction.Component_data.t -> unit) ->
+    unit
+
+  val on_modal :
+    t ->
+    string ->
+    (t -> Interaction.t -> Interaction.Modal_data.t -> unit) ->
+    unit
+
+  val collect_component :
+    t ->
+    clock:'a Eio.Time.clock ->
+    ?timeout:float ->
+    (Interaction.t -> Interaction.Component_data.t -> bool) ->
+    Interaction.t option
+
+  val collect_modal :
+    t ->
+    clock:'a Eio.Time.clock ->
+    ?timeout:float ->
+    (Interaction.t -> Interaction.Modal_data.t -> bool) ->
+    Interaction.t option
+
   val on_invite_create :
     t -> (t -> Event_payload.Invite_create.t -> unit) -> unit
 
@@ -280,6 +318,12 @@ include (
       entitlement : Entitlement.t option;
       subscription : Subscription.t option;
       soundboard_sound : Soundboard_sound.t option;
+    }
+
+    type collector = {
+      matches : Interaction.t -> bool;
+      promise : Interaction.t option Eio.Promise.t;
+      resolver : Interaction.t option Eio.Promise.u;
     }
 
     type t = {
@@ -406,6 +450,8 @@ include (
       guild_unavailable_handlers :
         (t -> Event_payload.Guild_unavailable.t -> unit) list Atomic.t;
           [@opaque]
+      collectors : collector list Atomic.t; [@opaque]
+      collector_handler_installed : bool Atomic.t; [@opaque]
       mutable user : User.t option;
           [@printer
             fun fmt u ->
@@ -2736,6 +2782,136 @@ include (
       add_decoded_handler c Discord_private.P_event.Interaction_create
         Interaction.of_yojson f
 
+    let on_command (c : t) (name : string)
+        (f : t -> Interaction.t -> Interaction.Command_data.t -> unit) : unit =
+      add_decoded_handler c Discord_private.P_event.Interaction_create
+        Interaction.of_yojson (fun t interaction ->
+          match Interaction.data interaction with
+          | Some (Interaction.Command_data data)
+            when Interaction.Command_data.name data = name ->
+              f t interaction data
+          | _ -> ())
+
+    let on_autocomplete (c : t) (name : string)
+        (f : t -> Interaction.t -> Interaction.Autocomplete_data.t -> unit) :
+        unit =
+      add_decoded_handler c Discord_private.P_event.Interaction_create
+        Interaction.of_yojson (fun t interaction ->
+          match Interaction.data interaction with
+          | Some (Interaction.Autocomplete_data data)
+            when Interaction.Autocomplete_data.name data = name ->
+              f t interaction data
+          | _ -> ())
+
+    let on_component (c : t) (custom_id : string)
+        (f : t -> Interaction.t -> Interaction.Component_data.t -> unit) : unit
+        =
+      add_decoded_handler c Discord_private.P_event.Interaction_create
+        Interaction.of_yojson (fun t interaction ->
+          match Interaction.data interaction with
+          | Some (Interaction.Component_data data)
+            when Interaction.Component_data.custom_id data = custom_id ->
+              f t interaction data
+          | _ -> ())
+
+    let on_modal (c : t) (custom_id : string)
+        (f : t -> Interaction.t -> Interaction.Modal_data.t -> unit) : unit =
+      add_decoded_handler c Discord_private.P_event.Interaction_create
+        Interaction.of_yojson (fun t interaction ->
+          match Interaction.data interaction with
+          | Some (Interaction.Modal_data data)
+            when Interaction.Modal_data.custom_id data = custom_id ->
+              f t interaction data
+          | _ -> ())
+
+    let add_collector (c : t) (collector : collector) : unit =
+      let rec add () =
+        let old = Atomic.get c.collectors in
+        if not (Atomic.compare_and_set c.collectors old (collector :: old)) then
+          add ()
+      in
+      add ()
+
+    let remove_collector (c : t) (collector : collector) : unit =
+      let rec remove () =
+        let old = Atomic.get c.collectors in
+        let remaining =
+          List.filter (fun existing -> existing != collector) old
+        in
+        if List.length remaining = List.length old then ()
+        else if not (Atomic.compare_and_set c.collectors old remaining) then
+          remove ()
+      in
+      remove ()
+
+    let resolve_collectors (c : t) (interaction : Interaction.t) : unit =
+      let rec take () =
+        let old = Atomic.get c.collectors in
+        let matching, remaining =
+          List.partition (fun collector -> collector.matches interaction) old
+        in
+        match matching with
+        | [] -> []
+        | _ ->
+            if Atomic.compare_and_set c.collectors old remaining then matching
+            else take ()
+      in
+      List.iter
+        (fun collector ->
+          Eio.Promise.resolve collector.resolver (Some interaction))
+        (take ())
+
+    let ensure_collector_handler (c : t) : unit =
+      let rec ensure () =
+        if Atomic.get c.collector_handler_installed then ()
+        else if Atomic.compare_and_set c.collector_handler_installed false true
+        then
+          add_decoded_handler c Discord_private.P_event.Interaction_create
+            Interaction.of_yojson (fun _ interaction ->
+              resolve_collectors c interaction)
+        else ensure ()
+      in
+      ensure ()
+
+    let collect (c : t) ~(clock : 'a Eio.Time.clock) ?timeout
+        ~(matches : Interaction.t -> bool) () : Interaction.t option =
+      ensure_collector_handler c;
+      let promise, resolver = Eio.Promise.create () in
+      let collector = { matches; promise; resolver } in
+      add_collector c collector;
+      Fun.protect
+        ~finally:(fun () -> remove_collector c collector)
+        (fun () ->
+          match timeout with
+          | None -> Eio.Promise.await promise
+          | Some seconds -> (
+              match
+                Eio.Time.with_timeout clock seconds (fun () ->
+                    Ok (Eio.Promise.await promise))
+              with
+              | Ok result -> result
+              | Error `Timeout -> None))
+
+    let collect_component (c : t) ~(clock : 'a Eio.Time.clock) ?timeout
+        (matches : Interaction.t -> Interaction.Component_data.t -> bool) :
+        Interaction.t option =
+      collect c ~clock ?timeout
+        ~matches:(fun interaction ->
+          match Interaction.data interaction with
+          | Some (Interaction.Component_data data) -> matches interaction data
+          | _ -> false)
+        ()
+
+    let collect_modal (c : t) ~(clock : 'a Eio.Time.clock) ?timeout
+        (matches : Interaction.t -> Interaction.Modal_data.t -> bool) :
+        Interaction.t option =
+      collect c ~clock ?timeout
+        ~matches:(fun interaction ->
+          match Interaction.data interaction with
+          | Some (Interaction.Modal_data data) -> matches interaction data
+          | _ -> false)
+        ()
+
     let on_invite_create (c : t)
         (f : t -> Event_payload.Invite_create.t -> unit) : unit =
       add_handler c Discord_private.P_event.Invite_create (fun t _ json ->
@@ -3007,6 +3183,8 @@ include (
         sticker_delete_handlers = Atomic.make [];
         guild_available_handlers = Atomic.make [];
         guild_unavailable_handlers = Atomic.make [];
+        collectors = Atomic.make [];
+        collector_handler_installed = Atomic.make false;
         user = None;
         rest = None;
       }
