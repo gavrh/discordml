@@ -260,15 +260,18 @@ let send_select_protocol (t : t) ~(address : string) ~(port : int)
   in
   send_json t (`Assoc [ ("op", `Int 1); ("d", d) ])
 
-let send_speaking (t : t) : unit =
+let send_speaking (t : t) ~(speaking : bool) : bool =
   match t.ssrc with
-  | None -> ()
+  | None -> false
   | Some ssrc ->
+      let value = if speaking then 1 else 0 in
       let d =
-        `Assoc [ ("speaking", `Int 1); ("delay", `Int 0); ("ssrc", `Int ssrc) ]
+        `Assoc
+          [ ("speaking", `Int value); ("delay", `Int 0); ("ssrc", `Int ssrc) ]
       in
       send_json t (`Assoc [ ("op", `Int 5); ("d", d) ]);
-      t.speaking <- true
+      t.speaking <- speaking;
+      true
 
 let dave_destroy (t : t) : unit =
   (match t.encryptor with
@@ -513,7 +516,6 @@ let handle_session_description (t : t) (json : Yojson.Safe.t) : unit =
     int_option json "dave_protocol_version" |> Option.value ~default:0
   in
   if dave_version > 0 then dave_init t dave_version;
-  send_speaking t;
   set_state t Connected
 
 let handle_ready (t : t) (sw : Eio.Switch.t) (json : Yojson.Safe.t) : unit =
@@ -553,7 +555,7 @@ let handle_json (t : t) (sw : Eio.Switch.t) (json : Yojson.Safe.t) : unit =
           t.heartbeat_interval <- Some (float_of_int interval /. 1000.)
       | None -> ())
   | Some 9 ->
-      send_speaking t;
+      if t.speaking then ignore (send_speaking t ~speaking:true);
       set_state t Connected
   | Some 13 -> (
       match json |> member "d" |> member "user_id" |> to_string_option with
@@ -864,17 +866,33 @@ let play (t : t) ~(source : unit -> int array option) : unit =
         failwith ("voice: " ^ P_opus.load_error ());
       Eio.Fiber.fork ~sw (fun () ->
           let encoder = P_opus.encoder_create () in
+          let speaking = ref false in
+          let start_speaking () =
+            if not !speaking then speaking := send_speaking t ~speaking:true
+          in
+          let stop_speaking () =
+            if !speaking then begin
+              ignore (send_speaking t ~speaking:false);
+              speaking := false
+            end
+          in
           Fun.protect
-            ~finally:(fun () -> P_opus.encoder_destroy encoder)
+            ~finally:(fun () ->
+              (try stop_speaking () with _ -> ());
+              P_opus.encoder_destroy encoder)
             (fun () ->
               let rec loop () =
                 match source () with
                 | None ->
-                    for _ = 1 to 5 do
-                      ignore (send_audio t "\xF8\xFF\xFE");
-                      Eio.Time.sleep t.clock 0.02
-                    done
+                    if !speaking then begin
+                      for _ = 1 to 5 do
+                        ignore (send_audio t "\xF8\xFF\xFE");
+                        Eio.Time.sleep t.clock 0.02
+                      done;
+                      stop_speaking ()
+                    end
                 | Some pcm ->
+                    start_speaking ();
                     ignore (send_audio t (P_opus.encode encoder pcm));
                     Eio.Time.sleep t.clock 0.02;
                     loop ()
@@ -894,6 +912,7 @@ let leave (t : t) : unit =
     t.stopping <- true;
     Eio.Condition.broadcast t.cond;
     send_voice_state t None;
+    if t.speaking then ignore (send_speaking t ~speaking:false);
     close_conn t;
     (match t.voice_sw with
     | Some sw -> Eio.Switch.fail sw (Failure "voice: left")
