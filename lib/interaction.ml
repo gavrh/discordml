@@ -50,7 +50,7 @@ module type Interaction = sig
     val resolved : t -> Resolved.t option
     val options : t -> Application_command.Command_option.t list
     val option : t -> string -> Application_command.Command_option.t option
-    val value : t -> string -> string option
+    val value : t -> string -> Application_command.Command_option.value option
     val guild_id : t -> string option
     val target_id : t -> string option
     val pp : Format.formatter -> t -> unit
@@ -370,7 +370,8 @@ include (
         in
         find t.options
 
-      let value (t : t) (name : string) : string option =
+      let value (t : t) (name : string) :
+          Application_command.Command_option.value option =
         match option t name with
         | None -> None
         | Some option -> Application_command.Command_option.value option

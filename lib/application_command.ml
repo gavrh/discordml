@@ -28,6 +28,12 @@ module type Application_command = sig
   end
 
   module Command_option : sig
+    type value =
+      | String of string
+      | Integer of int
+      | Boolean of bool
+      | Number of float
+
     type t = {
       type_ : int;
       name : string;
@@ -44,7 +50,7 @@ module type Application_command = sig
       name_localizations : (string * string) list;
       description_localizations : (string * string) list;
       focused : bool option;
-      value : string option;
+      value : value option;
     }
 
     val type_ : t -> int
@@ -62,7 +68,7 @@ module type Application_command = sig
     val name_localizations : t -> (string * string) list
     val description_localizations : t -> (string * string) list
     val focused : t -> bool option
-    val value : t -> string option
+    val value : t -> value option
 
     val make :
       type_:int ->
@@ -289,6 +295,13 @@ include (
     end
 
     module Command_option = struct
+      type value =
+        | String of string
+        | Integer of int
+        | Boolean of bool
+        | Number of float
+      [@@deriving show, eq]
+
       type t = {
         type_ : int;
         name : string;
@@ -305,7 +318,7 @@ include (
         name_localizations : (string * string) list;
         description_localizations : (string * string) list;
         focused : bool option;
-        value : string option;
+        value : value option;
       }
       [@@deriving show, eq]
 
@@ -329,7 +342,7 @@ include (
         t.description_localizations
 
       let focused (t : t) : bool option = t.focused
-      let value (t : t) : string option = t.value
+      let value (t : t) : value option = t.value
 
       let make ~(type_ : int) ~(name : string) ~(description : string) ?required
           ?(choices = []) ?(options = []) ?(channel_types = []) ?min_value
@@ -387,6 +400,16 @@ include (
                 localizations_to_yojson t.description_localizations );
             ])
 
+      let value_of_json (json : Yojson.Safe.t) : value option =
+        match json with
+        | `Null -> None
+        | `String value -> Some (String value)
+        | `Int value -> Some (Integer value)
+        | `Intlit value -> Some (Integer (int_of_string value))
+        | `Bool value -> Some (Boolean value)
+        | `Float value -> Some (Number value)
+        | _ -> None
+
       let rec of_yojson (json : Yojson.Safe.t) : (t, string) result =
         let open Yojson.Safe.Util in
         try
@@ -435,7 +458,7 @@ include (
               description_localizations =
                 localizations (json |> member "description_localizations");
               focused = json |> member "focused" |> to_bool_option;
-              value = json |> member "value" |> to_string_option;
+              value = value_of_json (json |> member "value");
             }
         with
         | Type_error (msg, _) -> Error msg
