@@ -1,4 +1,4 @@
-name: Build
+name: CI
 
 on:
   push:
@@ -7,6 +7,10 @@ on:
   pull_request:
     branches:
       - master
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'push' }}
 
 defaults:
   run:
@@ -35,3 +39,15 @@ jobs:
       - run: opam install --deps-only --yes .
       - run: opam exec -- dune build
       - run: opam exec -- dune build @install
+
+  Format:
+    name: Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ocaml/setup-ocaml@v3
+        with:
+          ocaml-compiler: "5.2"
+          dune-cache: true
+      - run: opam install --yes ocamlformat.0.29.0
+      - run: opam exec -- dune build @fmt
