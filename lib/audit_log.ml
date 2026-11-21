@@ -62,6 +62,17 @@ module type Audit_log = sig
   val show : t -> string
   val entry_of_yojson : Yojson.Safe.t -> (entry, string) result
   val of_yojson : Yojson.Safe.t -> (t, string) result
+
+  val fetch :
+    Rest.t ->
+    guild_id:string ->
+    ?limit:int ->
+    ?before:string ->
+    ?after:string ->
+    ?user_id:string ->
+    ?action_type:int ->
+    unit ->
+    t
 end
 
 include (
@@ -294,5 +305,27 @@ include (
       | Type_error (msg, _) -> Error msg
       | Undefined (msg, _) -> Error msg
       | Failure msg -> Error msg
+
+    let fetch (rest : Rest.t) ~(guild_id : string) ?limit ?before ?after
+        ?user_id ?action_type () : t =
+      let params =
+        (match limit with
+          | Some v -> [ ("limit", string_of_int v) ]
+          | None -> [])
+        @ (match before with Some v -> [ ("before", v) ] | None -> [])
+        @ (match after with Some v -> [ ("after", v) ] | None -> [])
+        @ (match user_id with Some v -> [ ("user_id", v) ] | None -> [])
+        @
+        match action_type with
+        | Some v -> [ ("action_type", string_of_int v) ]
+        | None -> []
+      in
+      let path = P_query.path ("/guilds/" ^ guild_id ^ "/audit-logs") params in
+      let code, resp = Rest.request rest Rest.Get path in
+      if code < 200 || code >= 300 then
+        failwith (Printf.sprintf "GET %s: HTTP %d: %s" path code resp);
+      match of_yojson (Yojson.Safe.from_string resp) with
+      | Ok log -> log
+      | Error msg -> failwith (path ^ ": " ^ msg)
   end :
     Audit_log)
