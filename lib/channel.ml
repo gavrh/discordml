@@ -210,6 +210,79 @@ module type Channel = sig
   val pp : Format.formatter -> t -> unit
   val equal : t -> t -> bool
   val show : t -> string
+
+  type thread_list = {
+    threads : t list;
+    members : Thread_member.t list;
+    has_more : bool;
+  }
+
+  val threads : thread_list -> t list
+  val members : thread_list -> Thread_member.t list
+  val has_more : thread_list -> bool
+
+  val start_thread_from_message :
+    Rest.t ->
+    channel_id:string ->
+    message_id:string ->
+    name:string ->
+    ?auto_archive_duration:int ->
+    ?rate_limit_per_user:int ->
+    unit ->
+    t
+
+  val start_thread :
+    Rest.t ->
+    channel_id:string ->
+    name:string ->
+    ?type_:int ->
+    ?auto_archive_duration:int ->
+    ?invitable:bool ->
+    ?rate_limit_per_user:int ->
+    unit ->
+    t
+
+  val join_thread : Rest.t -> channel_id:string -> unit
+  val leave_thread : Rest.t -> channel_id:string -> unit
+  val add_thread_member : Rest.t -> channel_id:string -> user_id:string -> unit
+
+  val remove_thread_member :
+    Rest.t -> channel_id:string -> user_id:string -> unit
+
+  val list_active_threads : Rest.t -> guild_id:string -> thread_list
+
+  val list_public_archived_threads :
+    Rest.t ->
+    channel_id:string ->
+    ?before:string ->
+    ?limit:int ->
+    unit ->
+    thread_list
+
+  val list_private_archived_threads :
+    Rest.t ->
+    channel_id:string ->
+    ?before:string ->
+    ?limit:int ->
+    unit ->
+    thread_list
+
+  val list_thread_members :
+    Rest.t ->
+    channel_id:string ->
+    ?with_member:bool ->
+    ?after:string ->
+    ?limit:int ->
+    unit ->
+    Thread_member.t list
+
+  val fetch_thread_member :
+    Rest.t ->
+    channel_id:string ->
+    user_id:string ->
+    ?with_member:bool ->
+    unit ->
+    Thread_member.t
 end
 
 include (
@@ -402,6 +475,12 @@ include (
       default_sort_order : int option;
       default_thread_rate_limit_per_user : int option;
     }
+
+    and thread_list = {
+      threads : t list;
+      members : Thread_member.t list;
+      has_more : bool;
+    }
     [@@deriving show, eq]
 
     let common_of : t -> common = function
@@ -431,6 +510,9 @@ include (
     let nsfw (c : t) : bool = (common_of c).nsfw
     let flags (c : t) : int = (common_of c).flags
     let permissions (c : t) : Permission.t option = (common_of c).permissions
+    let threads (l : thread_list) : t list = l.threads
+    let members (l : thread_list) : Thread_member.t list = l.members
+    let has_more (l : thread_list) : bool = l.has_more
 
     let empty_common (id : string) : common =
       {
@@ -688,5 +770,199 @@ include (
       if code < 200 || code >= 300 then
         failwith (Printf.sprintf "GET %s: HTTP %d: %s" path code resp);
       decode path resp
+
+    let thread_list_of_yojson (json : Yojson.Safe.t) : thread_list =
+      let open Yojson.Safe.Util in
+      let threads =
+        match json |> member "threads" with
+        | `List l ->
+            List.map
+              (fun item ->
+                match of_yojson item with
+                | Ok thread -> thread
+                | Error msg -> failwith ("threads: " ^ msg))
+              l
+        | _ -> []
+      in
+      let members =
+        match json |> member "members" with
+        | `List l ->
+            List.map
+              (fun item ->
+                match Thread_member.of_yojson item with
+                | Ok member -> member
+                | Error msg -> failwith ("members: " ^ msg))
+              l
+        | _ -> []
+      in
+      {
+        threads;
+        members;
+        has_more =
+          json |> member "has_more" |> to_bool_option
+          |> Option.value ~default:false;
+      }
+
+    let thread_member_of_yojson (path : string) (resp : string) :
+        Thread_member.t =
+      match Thread_member.of_yojson (Yojson.Safe.from_string resp) with
+      | Ok member -> member
+      | Error msg -> failwith (path ^ ": " ^ msg)
+
+    let thread_member_list_of_yojson (path : string) (resp : string) :
+        Thread_member.t list =
+      Yojson.Safe.from_string resp
+      |> Yojson.Safe.Util.to_list
+      |> List.map (fun json ->
+          match Thread_member.of_yojson json with
+          | Ok member -> member
+          | Error msg -> failwith (path ^ ": " ^ msg))
+
+    let opt (name : string) (value : 'a option) (f : 'a -> Yojson.Safe.t) =
+      Option.map (fun v -> (name, f v)) value
+
+    let start_thread_from_message (rest : Rest.t) ~(channel_id : string)
+        ~(message_id : string) ~(name : string) ?auto_archive_duration
+        ?rate_limit_per_user () : t =
+      let path =
+        "/channels/" ^ channel_id ^ "/messages/" ^ message_id ^ "/threads"
+      in
+      let body =
+        `Assoc
+          (("name", `String name)
+          :: List.filter_map
+               (fun x -> x)
+               [
+                 opt "auto_archive_duration" auto_archive_duration (fun v ->
+                     `Int v);
+                 opt "rate_limit_per_user" rate_limit_per_user (fun v -> `Int v);
+               ])
+        |> Yojson.Safe.to_string
+      in
+      let code, resp = Rest.request rest ~body Rest.Post path in
+      if code < 200 || code >= 300 then
+        failwith (Printf.sprintf "POST %s: HTTP %d: %s" path code resp);
+      decode path resp
+
+    let start_thread (rest : Rest.t) ~(channel_id : string) ~(name : string)
+        ?type_ ?auto_archive_duration ?invitable ?rate_limit_per_user () : t =
+      let path = "/channels/" ^ channel_id ^ "/threads" in
+      let body =
+        `Assoc
+          (("name", `String name)
+          :: List.filter_map
+               (fun x -> x)
+               [
+                 opt "type" type_ (fun v -> `Int v);
+                 opt "auto_archive_duration" auto_archive_duration (fun v ->
+                     `Int v);
+                 opt "invitable" invitable (fun v -> `Bool v);
+                 opt "rate_limit_per_user" rate_limit_per_user (fun v -> `Int v);
+               ])
+        |> Yojson.Safe.to_string
+      in
+      let code, resp = Rest.request rest ~body Rest.Post path in
+      if code < 200 || code >= 300 then
+        failwith (Printf.sprintf "POST %s: HTTP %d: %s" path code resp);
+      decode path resp
+
+    let join_thread (rest : Rest.t) ~(channel_id : string) : unit =
+      let path = "/channels/" ^ channel_id ^ "/thread-members/@me" in
+      let code, resp = Rest.request rest Rest.Put path in
+      if code < 200 || code >= 300 then
+        failwith (Printf.sprintf "PUT %s: HTTP %d: %s" path code resp)
+
+    let leave_thread (rest : Rest.t) ~(channel_id : string) : unit =
+      let path = "/channels/" ^ channel_id ^ "/thread-members/@me" in
+      let code, resp = Rest.request rest Rest.Delete path in
+      if code < 200 || code >= 300 then
+        failwith (Printf.sprintf "DELETE %s: HTTP %d: %s" path code resp)
+
+    let add_thread_member (rest : Rest.t) ~(channel_id : string)
+        ~(user_id : string) : unit =
+      let path = "/channels/" ^ channel_id ^ "/thread-members/" ^ user_id in
+      let code, resp = Rest.request rest Rest.Put path in
+      if code < 200 || code >= 300 then
+        failwith (Printf.sprintf "PUT %s: HTTP %d: %s" path code resp)
+
+    let remove_thread_member (rest : Rest.t) ~(channel_id : string)
+        ~(user_id : string) : unit =
+      let path = "/channels/" ^ channel_id ^ "/thread-members/" ^ user_id in
+      let code, resp = Rest.request rest Rest.Delete path in
+      if code < 200 || code >= 300 then
+        failwith (Printf.sprintf "DELETE %s: HTTP %d: %s" path code resp)
+
+    let list_active_threads (rest : Rest.t) ~(guild_id : string) : thread_list =
+      let path = "/guilds/" ^ guild_id ^ "/threads/active" in
+      let code, resp = Rest.request rest Rest.Get path in
+      if code < 200 || code >= 300 then
+        failwith (Printf.sprintf "GET %s: HTTP %d: %s" path code resp);
+      thread_list_of_yojson (Yojson.Safe.from_string resp)
+
+    let list_archived_threads (rest : Rest.t) ~(channel_id : string)
+        ~(visibility : string) ?before ?limit () : thread_list =
+      let params =
+        (match before with Some v -> [ ("before", v) ] | None -> [])
+        @
+        match limit with
+        | Some v -> [ ("limit", string_of_int v) ]
+        | None -> []
+      in
+      let path =
+        P_query.path
+          ("/channels/" ^ channel_id ^ "/threads/archived/" ^ visibility)
+          params
+      in
+      let code, resp = Rest.request rest Rest.Get path in
+      if code < 200 || code >= 300 then
+        failwith (Printf.sprintf "GET %s: HTTP %d: %s" path code resp);
+      thread_list_of_yojson (Yojson.Safe.from_string resp)
+
+    let list_public_archived_threads (rest : Rest.t) ~(channel_id : string)
+        ?before ?limit () : thread_list =
+      list_archived_threads rest ~channel_id ~visibility:"public" ?before ?limit
+        ()
+
+    let list_private_archived_threads (rest : Rest.t) ~(channel_id : string)
+        ?before ?limit () : thread_list =
+      list_archived_threads rest ~channel_id ~visibility:"private" ?before
+        ?limit ()
+
+    let list_thread_members (rest : Rest.t) ~(channel_id : string) ?with_member
+        ?after ?limit () : Thread_member.t list =
+      let params =
+        (match with_member with
+          | Some v -> [ ("with_member", P_query.bool v) ]
+          | None -> [])
+        @ (match after with Some v -> [ ("after", v) ] | None -> [])
+        @
+        match limit with
+        | Some v -> [ ("limit", string_of_int v) ]
+        | None -> []
+      in
+      let path =
+        P_query.path ("/channels/" ^ channel_id ^ "/thread-members") params
+      in
+      let code, resp = Rest.request rest Rest.Get path in
+      if code < 200 || code >= 300 then
+        failwith (Printf.sprintf "GET %s: HTTP %d: %s" path code resp);
+      thread_member_list_of_yojson path resp
+
+    let fetch_thread_member (rest : Rest.t) ~(channel_id : string)
+        ~(user_id : string) ?with_member () : Thread_member.t =
+      let params =
+        match with_member with
+        | Some v -> [ ("with_member", P_query.bool v) ]
+        | None -> []
+      in
+      let path =
+        P_query.path
+          ("/channels/" ^ channel_id ^ "/thread-members/" ^ user_id)
+          params
+      in
+      let code, resp = Rest.request rest Rest.Get path in
+      if code < 200 || code >= 300 then
+        failwith (Printf.sprintf "GET %s: HTTP %d: %s" path code resp);
+      thread_member_of_yojson path resp
   end :
     Channel)
