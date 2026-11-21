@@ -40,6 +40,62 @@ module type Guild_scheduled_event = sig
   val equal : t -> t -> bool
   val show : t -> string
   val of_yojson : Yojson.Safe.t -> (t, string) result
+
+  val create :
+    Rest.t ->
+    guild_id:string ->
+    name:string ->
+    scheduled_start_time:string ->
+    entity_type:int ->
+    ?privacy_level:int ->
+    ?channel_id:string ->
+    ?description:string ->
+    ?scheduled_end_time:string ->
+    ?location:string ->
+    ?image:string ->
+    unit ->
+    t
+
+  val fetch :
+    Rest.t ->
+    guild_id:string ->
+    event_id:string ->
+    ?with_user_count:bool ->
+    unit ->
+    t
+
+  val list :
+    Rest.t -> guild_id:string -> ?with_user_count:bool -> unit -> t list
+
+  val edit :
+    Rest.t ->
+    guild_id:string ->
+    event_id:string ->
+    ?name:string ->
+    ?description:string ->
+    ?scheduled_start_time:string ->
+    ?scheduled_end_time:string ->
+    ?privacy_level:int ->
+    ?status:int ->
+    ?entity_type:int ->
+    ?channel_id:string ->
+    ?location:string ->
+    ?image:string ->
+    unit ->
+    t
+
+  val delete : Rest.t -> guild_id:string -> event_id:string -> unit
+
+  val list_interested_users :
+    Rest.t ->
+    guild_id:string ->
+    event_id:string ->
+    ?with_member:bool ->
+    ?before:string ->
+    ?after:string ->
+    ?limit:int ->
+    unit ->
+    User.t list
 end
 
 include (
@@ -132,5 +188,149 @@ include (
       | Type_error (msg, _) -> Error msg
       | Undefined (msg, _) -> Error msg
       | Failure msg -> Error msg
+
+    let decode (path : string) (resp : string) : t =
+      match of_yojson (Yojson.Safe.from_string resp) with
+      | Ok event -> event
+      | Error msg -> failwith (path ^ ": " ^ msg)
+
+    let decode_list (path : string) (resp : string) : t list =
+      Yojson.Safe.from_string resp
+      |> Yojson.Safe.Util.to_list
+      |> List.map (fun json ->
+          match of_yojson json with
+          | Ok event -> event
+          | Error msg -> failwith (path ^ ": " ^ msg))
+
+    let opt (name : string) (value : 'a option) (f : 'a -> Yojson.Safe.t) =
+      Option.map (fun v -> (name, f v)) value
+
+    let entity_metadata_json (location : string option) : Yojson.Safe.t option =
+      Option.map (fun value -> `Assoc [ ("location", `String value) ]) location
+
+    let create (rest : Rest.t) ~(guild_id : string) ~(name : string)
+        ~(scheduled_start_time : string) ~(entity_type : int)
+        ?(privacy_level = 2) ?channel_id ?description ?scheduled_end_time
+        ?location ?image () : t =
+      let path = "/guilds/" ^ guild_id ^ "/scheduled-events" in
+      let body =
+        `Assoc
+          (List.filter_map
+             (fun x -> x)
+             [
+               opt "channel_id" channel_id (fun v -> `String v);
+               opt "entity_metadata" (entity_metadata_json location) (fun v ->
+                   v);
+               Some ("name", `String name);
+               Some ("privacy_level", `Int privacy_level);
+               Some ("scheduled_start_time", `String scheduled_start_time);
+               opt "scheduled_end_time" scheduled_end_time (fun v -> `String v);
+               opt "description" description (fun v -> `String v);
+               Some ("entity_type", `Int entity_type);
+               opt "image" image (fun v -> `String v);
+             ])
+        |> Yojson.Safe.to_string
+      in
+      let code, resp = Rest.request rest ~body Rest.Post path in
+      if code < 200 || code >= 300 then
+        failwith (Printf.sprintf "POST %s: HTTP %d: %s" path code resp);
+      decode path resp
+
+    let fetch (rest : Rest.t) ~(guild_id : string) ~(event_id : string)
+        ?with_user_count () : t =
+      let params =
+        match with_user_count with
+        | Some v -> [ ("with_user_count", P_query.bool v) ]
+        | None -> []
+      in
+      let path =
+        P_query.path
+          ("/guilds/" ^ guild_id ^ "/scheduled-events/" ^ event_id)
+          params
+      in
+      let code, resp = Rest.request rest Rest.Get path in
+      if code < 200 || code >= 300 then
+        failwith (Printf.sprintf "GET %s: HTTP %d: %s" path code resp);
+      decode path resp
+
+    let list (rest : Rest.t) ~(guild_id : string) ?with_user_count () : t list =
+      let params =
+        match with_user_count with
+        | Some v -> [ ("with_user_count", P_query.bool v) ]
+        | None -> []
+      in
+      let path =
+        P_query.path ("/guilds/" ^ guild_id ^ "/scheduled-events") params
+      in
+      let code, resp = Rest.request rest Rest.Get path in
+      if code < 200 || code >= 300 then
+        failwith (Printf.sprintf "GET %s: HTTP %d: %s" path code resp);
+      decode_list path resp
+
+    let edit (rest : Rest.t) ~(guild_id : string) ~(event_id : string) ?name
+        ?description ?scheduled_start_time ?scheduled_end_time ?privacy_level
+        ?status ?entity_type ?channel_id ?location ?image () : t =
+      let path = "/guilds/" ^ guild_id ^ "/scheduled-events/" ^ event_id in
+      let body =
+        `Assoc
+          (List.filter_map
+             (fun x -> x)
+             [
+               opt "name" name (fun v -> `String v);
+               opt "description" description (fun v -> `String v);
+               opt "scheduled_start_time" scheduled_start_time (fun v ->
+                   `String v);
+               opt "scheduled_end_time" scheduled_end_time (fun v -> `String v);
+               opt "privacy_level" privacy_level (fun v -> `Int v);
+               opt "status" status (fun v -> `Int v);
+               opt "entity_type" entity_type (fun v -> `Int v);
+               opt "channel_id" channel_id (fun v -> `String v);
+               opt "entity_metadata" (entity_metadata_json location) (fun v ->
+                   v);
+               opt "image" image (fun v -> `String v);
+             ])
+        |> Yojson.Safe.to_string
+      in
+      let code, resp = Rest.request rest ~body Rest.Patch path in
+      if code < 200 || code >= 300 then
+        failwith (Printf.sprintf "PATCH %s: HTTP %d: %s" path code resp);
+      decode path resp
+
+    let delete (rest : Rest.t) ~(guild_id : string) ~(event_id : string) : unit
+        =
+      let path = "/guilds/" ^ guild_id ^ "/scheduled-events/" ^ event_id in
+      let code, resp = Rest.request rest Rest.Delete path in
+      if code < 200 || code >= 300 then
+        failwith (Printf.sprintf "DELETE %s: HTTP %d: %s" path code resp)
+
+    let list_interested_users (rest : Rest.t) ~(guild_id : string)
+        ~(event_id : string) ?with_member ?before ?after ?limit () : User.t list
+        =
+      let params =
+        (match with_member with
+          | Some v -> [ ("with_member", P_query.bool v) ]
+          | None -> [])
+        @ (match before with Some v -> [ ("before", v) ] | None -> [])
+        @ (match after with Some v -> [ ("after", v) ] | None -> [])
+        @
+        match limit with
+        | Some v -> [ ("limit", string_of_int v) ]
+        | None -> []
+      in
+      let path =
+        P_query.path
+          ("/guilds/" ^ guild_id ^ "/scheduled-events/" ^ event_id ^ "/users")
+          params
+      in
+      let code, resp = Rest.request rest Rest.Get path in
+      if code < 200 || code >= 300 then
+        failwith (Printf.sprintf "GET %s: HTTP %d: %s" path code resp);
+      Yojson.Safe.from_string resp
+      |> Yojson.Safe.Util.to_list
+      |> List.map (fun json ->
+          let user = Yojson.Safe.Util.member "user" json in
+          match User.of_yojson user with
+          | Ok user -> user
+          | Error msg -> failwith (path ^ ": " ^ msg))
   end :
     Guild_scheduled_event)
