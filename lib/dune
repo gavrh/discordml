@@ -27,8 +27,10 @@
   message
   message_activity
   message_update
+  oauth2
   p_http
   p_message_update
+  p_query
   p_rate_limit
   permission
   poll
@@ -48,7 +50,7 @@
   webhook
   welcome_screen
   widget)
- (private_modules p_http p_message_update p_rate_limit)
+ (private_modules p_http p_message_update p_query p_rate_limit)
  (libraries
   discord_private
   eio

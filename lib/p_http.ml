@@ -55,7 +55,7 @@ let escape_filename (name : string) : string =
     name;
   Buffer.contents b
 
-let multipart_body (boundary : string) (body : string option)
+let multipart_body (field : string) (boundary : string) (body : string option)
     (files : (string * string * string option) list) : string =
   let b = Buffer.create 1024 in
   let crlf () = Buffer.add_string b "\r\n" in
@@ -76,10 +76,13 @@ let multipart_body (boundary : string) (body : string option)
     (fun i (filename, content, content_type) ->
       Buffer.add_string b ("--" ^ boundary);
       crlf ();
+      let name =
+        if field = "files" then Printf.sprintf "files[%d]" i else field
+      in
       Buffer.add_string b
         (Printf.sprintf
-           "Content-Disposition: form-data; name=\"files[%d]\"; filename=\"%s\""
-           i (escape_filename filename));
+           "Content-Disposition: form-data; name=\"%s\"; filename=\"%s\"" name
+           (escape_filename filename));
       crlf ();
       let content_type =
         Option.value content_type ~default:"application/octet-stream"
@@ -97,22 +100,26 @@ let multipart_body (boundary : string) (body : string option)
   Buffer.contents b
 
 let send (t : t) ?(headers = []) ?(body : string option)
-    ?(files : (string * string * string option) list = []) ~(meth : string)
-    (path : string) =
+    ?(files : (string * string * string option) list = [])
+    ?(file_field = "files") ?content_type ?(authorization = "Bot " ^ t.token)
+    ~(meth : string) (path : string) =
   let uri = Uri.of_string (endpoint ^ path) in
   let content_type, body =
-    if files = [] then ("application/json", body)
+    if files = [] then
+      (Option.value content_type ~default:"application/json", body)
     else
       let boundary = random_boundary () in
       ( "multipart/form-data; boundary=" ^ boundary,
-        Some (multipart_body boundary body files) )
+        Some (multipart_body file_field boundary body files) )
+  in
+  let authorization =
+    if authorization = "" then [] else [ ("Authorization", authorization) ]
   in
   let all_headers =
     Http.Header.of_list
-      (("Authorization", "Bot " ^ t.token)
-      :: ("User-Agent", user_agent)
-      :: ("Content-Type", content_type)
-      :: headers)
+      (authorization
+      @ [ ("User-Agent", user_agent); ("Content-Type", content_type) ]
+      @ headers)
   in
   let body = Option.map Cohttp_eio.Body.of_string body in
   let resp, resp_body =
