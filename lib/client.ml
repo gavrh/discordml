@@ -1852,6 +1852,15 @@ include (
               if id = message_id then reaction :: acc else acc)
             c.reactions [])
 
+    let log_handler_error (event : string) (exn : exn) : unit =
+      prerr_endline ("handler error (" ^ event ^ "): " ^ Printexc.to_string exn)
+
+    let fork_handler ~sw (event : string) (f : unit -> unit) : unit =
+      Eio.Fiber.fork ~sw (fun () ->
+          try f () with
+          | Eio.Cancel.Cancelled _ as exn -> raise exn
+          | exn -> log_handler_error event exn)
+
     let dispatch_message_update ~sw (c : t) (json : Yojson.Safe.t) : unit =
       match Message_update.of_yojson json with
       | Error msg -> log_decode_error c "MESSAGE_UPDATE" msg
@@ -1866,7 +1875,8 @@ include (
           | Some author -> put_user c author
           | None -> ());
           List.iter
-            (fun f -> Eio.Fiber.fork ~sw (fun () -> f c old update))
+            (fun f ->
+              fork_handler ~sw "MESSAGE_UPDATE" (fun () -> f c old update))
             (Atomic.get c.message_update_handlers)
 
     let dispatch_message_delete ~sw (c : t) (json : Yojson.Safe.t) : unit =
@@ -1883,7 +1893,7 @@ include (
             { id; channel_id; guild_id; message = cached_message }
           in
           List.iter
-            (fun f -> Eio.Fiber.fork ~sw (fun () -> f c payload))
+            (fun f -> fork_handler ~sw "MESSAGE_DELETE" (fun () -> f c payload))
             (Atomic.get c.message_delete_handlers)
       | _ -> ()
 
@@ -1902,7 +1912,8 @@ include (
             { ids; channel_id; guild_id; messages; channel }
           in
           List.iter
-            (fun f -> Eio.Fiber.fork ~sw (fun () -> f c payload))
+            (fun f ->
+              fork_handler ~sw "MESSAGE_DELETE_BULK" (fun () -> f c payload))
             (Atomic.get c.message_delete_bulk_handlers)
       | None -> ()
 
@@ -2023,7 +2034,7 @@ include (
             | _ -> Atomic.get c.message_reaction_remove_handlers
           in
           List.iter
-            (fun f -> Eio.Fiber.fork ~sw (fun () -> f c payload))
+            (fun f -> fork_handler ~sw name (fun () -> f c payload))
             handlers
 
     let dispatch_reaction_remove_all ~sw (c : t) (json : Yojson.Safe.t) : unit =
@@ -2047,7 +2058,9 @@ include (
             }
           in
           List.iter
-            (fun f -> Eio.Fiber.fork ~sw (fun () -> f c payload))
+            (fun f ->
+              fork_handler ~sw "MESSAGE_REACTION_REMOVE_ALL" (fun () ->
+                  f c payload))
             (Atomic.get c.message_reaction_remove_all_handlers)
       | _ -> ()
 
@@ -2073,7 +2086,7 @@ include (
                 { message_id; channel_id; guild_id; emoji; reaction = removed }
               in
               List.iter
-                (fun f -> Eio.Fiber.fork ~sw (fun () -> f c payload))
+                (fun f -> fork_handler ~sw name (fun () -> f c payload))
                 (Atomic.get c.message_reaction_remove_emoji_handlers)
           | _ -> ())
 
@@ -2118,9 +2131,10 @@ include (
       in
       add ()
 
-    let run_handlers ~sw (handlers : 'a list Atomic.t) (f : 'a -> unit) : unit =
+    let run_handlers ~sw ~(event : string) (handlers : 'a list Atomic.t)
+        (f : 'a -> unit) : unit =
       List.iter
-        (fun handler -> Eio.Fiber.fork ~sw (fun () -> f handler))
+        (fun handler -> fork_handler ~sw event (fun () -> f handler))
         (Atomic.get handlers)
 
     let mark_unavailable (c : t) (guild_id : string) : bool =
@@ -2174,15 +2188,18 @@ include (
       in
       List.iter
         (fun emoji ->
-          run_handlers ~sw c.emoji_create_handlers (fun f -> f c emoji))
+          run_handlers ~sw ~event:"GUILD_EMOJIS_UPDATE" c.emoji_create_handlers
+            (fun f -> f c emoji))
         added;
       List.iter
         (fun (previous, emoji) ->
-          run_handlers ~sw c.emoji_update_handlers (fun f -> f c previous emoji))
+          run_handlers ~sw ~event:"GUILD_EMOJIS_UPDATE" c.emoji_update_handlers
+            (fun f -> f c previous emoji))
         updated;
       List.iter
         (fun emoji ->
-          run_handlers ~sw c.emoji_delete_handlers (fun f -> f c emoji))
+          run_handlers ~sw ~event:"GUILD_EMOJIS_UPDATE" c.emoji_delete_handlers
+            (fun f -> f c emoji))
         removed
 
     let dispatch_sticker_diff ~sw (c : t) ~(old : Sticker.t list)
@@ -2192,16 +2209,18 @@ include (
       in
       List.iter
         (fun sticker ->
-          run_handlers ~sw c.sticker_create_handlers (fun f -> f c sticker))
+          run_handlers ~sw ~event:"GUILD_STICKERS_UPDATE"
+            c.sticker_create_handlers (fun f -> f c sticker))
         added;
       List.iter
         (fun (previous, sticker) ->
-          run_handlers ~sw c.sticker_update_handlers (fun f ->
-              f c previous sticker))
+          run_handlers ~sw ~event:"GUILD_STICKERS_UPDATE"
+            c.sticker_update_handlers (fun f -> f c previous sticker))
         updated;
       List.iter
         (fun sticker ->
-          run_handlers ~sw c.sticker_delete_handlers (fun f -> f c sticker))
+          run_handlers ~sw ~event:"GUILD_STICKERS_UPDATE"
+            c.sticker_delete_handlers (fun f -> f c sticker))
         removed
 
     let on_ready (c : t) (f : t -> unit) : unit =
@@ -3335,7 +3354,8 @@ include (
                 List.iter (put_user c) (Message.mentions message);
                 refresh_message_reactions c message;
                 List.iter
-                  (fun f -> Eio.Fiber.fork ~sw (fun () -> f c message))
+                  (fun f ->
+                    fork_handler ~sw "MESSAGE_CREATE" (fun () -> f c message))
                   (Atomic.get c.message_handlers)
             | Error msg -> log_decode_error c "MESSAGE_CREATE" msg)
         | Some Discord_private.P_event.Message_update ->
@@ -3371,8 +3391,8 @@ include (
               let payload : Event_payload.Guild_unavailable.t =
                 { id = guild_id; guild = snap.guild }
               in
-              run_handlers ~sw c.guild_unavailable_handlers (fun f ->
-                  f c payload)
+              run_handlers ~sw ~event:(Discord_private.P_event.to_string event)
+                c.guild_unavailable_handlers (fun f -> f c payload)
             in
             (match event with
             | Discord_private.P_event.Guild_create when unavailable ->
@@ -3387,8 +3407,11 @@ include (
                     if mark_available c guild_id then
                       match guild c guild_id with
                       | Some g ->
-                          run_handlers ~sw c.guild_available_handlers (fun f ->
-                              f c g)
+                          run_handlers ~sw
+                            ~event:
+                              (Discord_private.P_event.to_string
+                                 Discord_private.P_event.Guild_create)
+                            c.guild_available_handlers (fun f -> f c g)
                       | None -> ())
                 | None -> ())
             | Discord_private.P_event.Guild_delete ->
@@ -3434,7 +3457,9 @@ include (
                   | None -> []
                 in
                 List.iter
-                  (fun f -> Eio.Fiber.fork ~sw (fun () -> f c snap json))
+                  (fun f ->
+                    fork_handler ~sw (Discord_private.P_event.to_string event)
+                      (fun () -> f c snap json))
                   handlers)
       in
       let rec spawn i =
