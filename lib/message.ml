@@ -84,6 +84,7 @@ module type Message = sig
   val role_subscription_data : t -> Role_subscription_data.t option
   val activity : t -> Message_activity.t option
   val of_yojson : Yojson.Safe.t -> (t, string) result
+  val of_yojson_partial : ?author:User.t -> Yojson.Safe.t -> (t, string) result
   val pp : Format.formatter -> t -> unit
   val show : t -> string
   val reply : Rest.t -> t -> string -> unit
@@ -203,15 +204,39 @@ include (
       | `Null -> None
       | v -> ( match of_yojson v with Ok x -> Some x | Error _ -> None)
 
-    let rec of_yojson (json : Yojson.Safe.t) : (t, string) result =
+    let default_partial_author : User.t =
+      match
+        User.of_yojson (`Assoc [ ("id", `String ""); ("username", `String "") ])
+      with
+      | Ok user -> user
+      | Error msg -> failwith msg
+
+    let rec of_yojson_impl ~(partial : bool) ?(author : User.t option)
+        (json : Yojson.Safe.t) : (t, string) result =
       let open Yojson.Safe.Util in
       try
         let id = json |> member "id" |> to_string in
-        let channel_id = json |> member "channel_id" |> to_string in
+        let channel_id =
+          if partial then
+            json |> member "channel_id" |> to_string_option
+            |> Option.value ~default:""
+          else json |> member "channel_id" |> to_string
+        in
         let author =
-          match User.of_yojson (json |> member "author") with
-          | Ok a -> a
-          | Error msg -> raise (Failure msg)
+          match author with
+          | Some author -> author
+          | None -> (
+              match User.of_yojson (json |> member "author") with
+              | Ok author -> author
+              | Error msg ->
+                  if partial then default_partial_author
+                  else raise (Failure msg))
+        in
+        let content =
+          if partial then
+            json |> member "content" |> to_string_option
+            |> Option.value ~default:""
+          else json |> member "content" |> to_string
         in
         let attachments =
           match json |> member "attachments" with
@@ -288,7 +313,9 @@ include (
               | Error _ -> None)
         in
         let referenced_message =
-          parse_opt (json |> member "referenced_message") of_yojson
+          parse_opt
+            (json |> member "referenced_message")
+            (of_yojson_impl ~partial)
         in
         let thread = parse_opt (json |> member "thread") Channel.of_yojson in
         let mention_channels =
@@ -340,7 +367,7 @@ include (
           | `List l ->
               List.filter_map
                 (fun s ->
-                  match of_yojson (s |> member "message") with
+                  match of_yojson_impl ~partial (s |> member "message") with
                   | Ok message -> Some { message }
                   | Error _ -> None)
                 l
@@ -358,7 +385,7 @@ include (
           {
             id;
             channel_id;
-            content = json |> member "content" |> to_string;
+            content;
             author;
             guild_id = json |> member "guild_id" |> to_string_option;
             type_ =
@@ -402,6 +429,13 @@ include (
       | Type_error (msg, _) -> Error msg
       | Undefined (msg, _) -> Error msg
       | Failure msg -> Error msg
+
+    let of_yojson (json : Yojson.Safe.t) : (t, string) result =
+      of_yojson_impl ~partial:false json
+
+    let of_yojson_partial ?(author : User.t option) (json : Yojson.Safe.t) :
+        (t, string) result =
+      of_yojson_impl ~partial:true ?author json
 
     let reply (rest : Rest.t) (m : t) (content : string) : unit =
       let path = "/channels/" ^ m.channel_id ^ "/messages" in
