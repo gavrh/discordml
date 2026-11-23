@@ -2571,7 +2571,8 @@ include (
                 json |> member "unavailable" |> to_bool_option
                 |> Option.value ~default:false
               in
-              f t { id; unavailable; guild = snap.guild }
+              if not unavailable then
+                f t { id; unavailable; guild = snap.guild }
           | None -> ())
 
     let on_guild_audit_log_entry_create (c : t)
