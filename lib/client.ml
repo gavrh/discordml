@@ -662,30 +662,53 @@ include (
     let rest (c : t) : Rest.t =
       match c.rest with Some r -> r | None -> failwith "client: not started"
 
+    let compare_snowflake (a : string) (b : string) : int =
+      let by_length = Int.compare (String.length a) (String.length b) in
+      if by_length = 0 then String.compare a b else by_length
+
     let guilds (c : t) : Guild.t list =
-      Eio.Mutex.use_ro c.guilds_mutex (fun () ->
-          Hashtbl.fold (fun _ g acc -> g :: acc) c.guilds [])
+      let guilds =
+        Eio.Mutex.use_ro c.guilds_mutex (fun () ->
+            Hashtbl.fold (fun _ g acc -> g :: acc) c.guilds [])
+      in
+      List.sort (fun a b -> compare_snowflake (Guild.id a) (Guild.id b)) guilds
 
     let channels (c : t) ~(guild_id : string) : Channel.t list =
-      Eio.Mutex.use_ro c.channels_mutex (fun () ->
-          Hashtbl.fold
-            (fun _ ch acc ->
-              match Channel.guild_id ch with
-              | Some g when g = guild_id -> ch :: acc
-              | _ -> acc)
-            c.channels [])
+      let channels =
+        Eio.Mutex.use_ro c.channels_mutex (fun () ->
+            Hashtbl.fold
+              (fun _ ch acc ->
+                match Channel.guild_id ch with
+                | Some g when g = guild_id -> ch :: acc
+                | _ -> acc)
+              c.channels [])
+      in
+      List.sort
+        (fun a b -> compare_snowflake (Channel.id a) (Channel.id b))
+        channels
 
     let members (c : t) ~(guild_id : string) : Member.t list =
-      Eio.Mutex.use_ro c.members_mutex (fun () ->
-          Hashtbl.fold
-            (fun (g, _) m acc -> if g = guild_id then m :: acc else acc)
-            c.members [])
+      let members =
+        Eio.Mutex.use_ro c.members_mutex (fun () ->
+            Hashtbl.fold
+              (fun (g, _) m acc -> if g = guild_id then m :: acc else acc)
+              c.members [])
+      in
+      List.sort
+        (fun a b ->
+          compare_snowflake (User.id (Member.user a)) (User.id (Member.user b)))
+        members
 
     let messages (c : t) ~(channel_id : string) : Message.t list =
-      Eio.Mutex.use_ro c.messages_mutex (fun () ->
-          Hashtbl.fold
-            (fun (cid, _) m acc -> if cid = channel_id then m :: acc else acc)
-            c.messages [])
+      let messages =
+        Eio.Mutex.use_ro c.messages_mutex (fun () ->
+            Hashtbl.fold
+              (fun (cid, _) m acc -> if cid = channel_id then m :: acc else acc)
+              c.messages [])
+      in
+      List.sort
+        (fun a b -> compare_snowflake (Message.id b) (Message.id a))
+        messages
 
     let decode_error_limit = 5
 
