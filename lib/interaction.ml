@@ -260,13 +260,71 @@ include (
       | 5 -> Modal_submit
       | n -> Unknown n
 
+    let log_decode_error (name : string) (msg : string) : unit =
+      prerr_endline (name ^ " decode failed: " ^ msg)
+
     let parse_map (json : Yojson.Safe.t) (name : string)
         (f : Yojson.Safe.t -> ('a, string) result) : (string * 'a) list =
       match Yojson.Safe.Util.member name json with
       | `Assoc l ->
           List.filter_map
             (fun (k, v) ->
-              match f v with Ok x -> Some (k, x) | Error _ -> None)
+              match f v with
+              | Ok x -> Some (k, x)
+              | Error msg ->
+                  log_decode_error ("resolved " ^ name) (k ^ ": " ^ msg);
+                  None)
+            l
+      | _ -> []
+
+    let parse_members (json : Yojson.Safe.t) (users : (string * User.t) list) :
+        (string * Member.t) list =
+      match Yojson.Safe.Util.member "members" json with
+      | `Assoc l ->
+          List.filter_map
+            (fun (k, v) ->
+              match List.assoc_opt k users with
+              | None ->
+                  log_decode_error "resolved members"
+                    (k ^ ": missing user in resolved users");
+                  None
+              | Some user -> (
+                  match Member.of_yojson_partial ~user v with
+                  | Ok member -> Some (k, member)
+                  | Error msg ->
+                      log_decode_error "resolved members" (k ^ ": " ^ msg);
+                      None))
+            l
+      | _ -> []
+
+    let resolved_message_author (users : (string * User.t) list)
+        (json : Yojson.Safe.t) : User.t option =
+      let open Yojson.Safe.Util in
+      match json |> member "author" with
+      | `Assoc fields -> (
+          match List.assoc_opt "id" fields with
+          | Some (`String id) -> (
+              match List.assoc_opt id users with
+              | Some user -> Some user
+              | None -> (
+                  match User.of_yojson (`Assoc fields) with
+                  | Ok user -> Some user
+                  | Error _ -> None))
+          | _ -> None)
+      | _ -> None
+
+    let parse_messages (json : Yojson.Safe.t) (users : (string * User.t) list) :
+        (string * Message.t) list =
+      match Yojson.Safe.Util.member "messages" json with
+      | `Assoc l ->
+          List.filter_map
+            (fun (k, v) ->
+              let author = resolved_message_author users v in
+              match Message.of_yojson_partial ?author v with
+              | Ok message -> Some (k, message)
+              | Error msg ->
+                  log_decode_error "resolved messages" (k ^ ": " ^ msg);
+                  None)
             l
       | _ -> []
 
@@ -318,13 +376,14 @@ include (
 
       let of_yojson (json : Yojson.Safe.t) : (t, string) result =
         try
+          let users = parse_map json "users" User.of_yojson in
           Ok
             {
-              users = parse_map json "users" User.of_yojson;
-              members = parse_map json "members" Member.of_yojson;
+              users;
+              members = parse_members json users;
               roles = parse_map json "roles" Role.of_yojson;
               channels = parse_map json "channels" Channel.of_yojson;
-              messages = parse_map json "messages" Message.of_yojson;
+              messages = parse_messages json users;
               attachments = parse_map json "attachments" Attachment.of_yojson;
             }
         with

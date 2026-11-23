@@ -215,11 +215,13 @@ include (
         (f : Yojson.Safe.t -> ('a, string) result) : 'a list =
       match Yojson.Safe.Util.member name json with
       | `List l ->
-          List.map
+          List.filter_map
             (fun item ->
               match f item with
-              | Ok value -> value
-              | Error msg -> raise (Failure msg))
+              | Ok value -> Some value
+              | Error msg ->
+                  prerr_endline ("guild " ^ name ^ " decode failed: " ^ msg);
+                  None)
             l
       | _ -> []
 
