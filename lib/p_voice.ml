@@ -66,7 +66,14 @@ let on_state_change (t : t) (f : t -> state -> unit) : unit =
 let set_state (t : t) (state : state) : unit =
   t.state <- state;
   List.iter
-    (fun f -> Eio.Fiber.fork ~sw:t.sw (fun () -> f t state))
+    (fun f ->
+      Eio.Fiber.fork ~sw:t.sw (fun () ->
+          try f t state with
+          | Eio.Cancel.Cancelled _ as exn -> raise exn
+          | exn ->
+              prerr_endline
+                ("discordml: voice state handler raised: "
+               ^ Printexc.to_string exn)))
     (Atomic.get t.state_handlers)
 
 let send_json (t : t) (json : Yojson.Safe.t) : unit =
