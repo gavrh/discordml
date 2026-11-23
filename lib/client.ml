@@ -413,7 +413,7 @@ include (
           [@printer
             fun fmt tbl -> Format.fprintf fmt "[ ...%d ]" (Hashtbl.length tbl)]
       soundboard_sounds_mutex : Eio.Mutex.t; [@opaque]
-      decode_errors : string list Atomic.t; [@opaque]
+      decode_errors : (string * string) list Atomic.t; [@opaque]
       shards : (int, Discord_private.P_shard.t) Hashtbl.t;
           [@printer
             fun fmt tbl -> Format.fprintf fmt "[ ...%d ]" (Hashtbl.length tbl)]
@@ -686,13 +686,21 @@ include (
             (fun (cid, _) m acc -> if cid = channel_id then m :: acc else acc)
             c.messages [])
 
+    let decode_error_limit = 5
+
     let log_decode_error (c : t) (name : string) (msg : string) : unit =
       let rec log () =
         let logged = Atomic.get c.decode_errors in
-        if not (List.mem name logged) then
-          if Atomic.compare_and_set c.decode_errors logged (name :: logged) then
-            prerr_endline (name ^ " decode failed: " ^ msg)
-          else log ()
+        let same_name =
+          List.filter (fun (event, _) -> String.equal event name) logged
+        in
+        if List.exists (fun (_, error) -> String.equal error msg) same_name then
+          ()
+        else if List.length same_name >= decode_error_limit then ()
+        else if
+          Atomic.compare_and_set c.decode_errors logged ((name, msg) :: logged)
+        then prerr_endline (name ^ " decode failed: " ^ msg)
+        else log ()
       in
       log ()
 
