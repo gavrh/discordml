@@ -46,9 +46,9 @@ include (
 
     type t = { http : P_http.t; rate_limit : P_rate_limit.t }
 
-    let create ~(sw : Eio.Switch.t) ~(net : 'a Eio.Net.t)
+    let create ~sw:(_ : Eio.Switch.t) ~(net : 'a Eio.Net.t)
         ~(clock : 'b Eio.Time.clock) ~(token : string) : t =
-      let http = P_http.create ~sw ~net ~token in
+      let http = P_http.create ~net ~token in
       let rate_limit =
         P_rate_limit.create
           ~sleep:(fun d -> Eio.Time.sleep clock d)
