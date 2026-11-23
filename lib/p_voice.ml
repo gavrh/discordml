@@ -609,16 +609,22 @@ let send_identify (t : t) ~(session_id : string) ~(token : string) : unit =
   send_json t (`Assoc [ ("op", `Int 0); ("d", d) ])
 
 let connection_url (endpoint : string) : string =
-  let endpoint =
+  let scheme, host =
     if String.length endpoint >= 6 && String.sub endpoint 0 6 = "wss://" then
-      String.sub endpoint 6 (String.length endpoint - 6)
+      ("wss://", String.sub endpoint 6 (String.length endpoint - 6))
     else if String.length endpoint >= 5 && String.sub endpoint 0 5 = "ws://"
-    then String.sub endpoint 5 (String.length endpoint - 5)
-    else endpoint
+    then ("ws://", String.sub endpoint 5 (String.length endpoint - 5))
+    else ("wss://", endpoint)
   in
-  match String.index_opt endpoint '?' with
-  | Some i -> String.sub endpoint 0 i ^ "/?v=8"
-  | None -> endpoint ^ "/?v=8"
+  let host =
+    match String.index_opt host '/' with
+    | Some i -> String.sub host 0 i
+    | None -> (
+        match String.index_opt host '?' with
+        | Some i -> String.sub host 0 i
+        | None -> host)
+  in
+  scheme ^ host ^ "/?v=8"
 
 let rec listen (t : t) (sw : Eio.Switch.t) (conn : Discord_private.P_ws.t) :
     unit =
