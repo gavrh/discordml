@@ -473,16 +473,13 @@ let handle_dave_json (t : t) (op : int) (json : Yojson.Safe.t) : unit =
 let handle_dave_binary (t : t) (op : int) (payload : string) : unit =
   match op with
   | 25 -> dave_set_external_sender t payload
-  | 27 ->
-      if String.length payload >= 1 then begin
-        let proposals = String.sub payload 1 (String.length payload - 1) in
-        match t.dave with
-        | None -> ()
-        | Some session ->
-            let commit = P_dave.session_process_proposals session proposals in
-            if String.length commit > 0 then
-              send_binary t (String.make 1 (Char.chr 28) ^ commit)
-      end
+  | 27 -> (
+      match t.dave with
+      | Some session when String.length payload >= 1 ->
+          let commit = P_dave.session_process_proposals session payload in
+          if String.length commit > 0 then
+            send_binary t (String.make 1 (Char.chr 28) ^ commit)
+      | _ -> ())
   | 29 ->
       if String.length payload >= 2 then begin
         let transition_id =
