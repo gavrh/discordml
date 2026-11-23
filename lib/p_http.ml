@@ -1,5 +1,10 @@
-type t = { client : Cohttp_eio.Client.t; token : string }
+type t = {
+  client : Cohttp_eio.Client.t;
+  token : string;
+  timeout : 'a. float -> (unit -> 'a) -> ('a, [ `Timeout ]) result;
+}
 
+let request_timeout : float = 30.
 let endpoint : string = "https://discord.com/api/v10"
 
 let user_agent : string =
@@ -23,10 +28,14 @@ let https () =
     in
     Tls_eio.client_of_flow ?host tls_config raw
 
-let create ~(net : 'a Eio.Net.t) ~(token : string) : t =
+let create ~(net : 'a Eio.Net.t) ~(clock : 'b Eio.Time.clock) ~(token : string)
+    : t =
   Mirage_crypto_rng_unix.use_default ();
   let client = Cohttp_eio.Client.make ~https:(Some (https ())) net in
-  { client; token }
+  let timeout : 'a. float -> (unit -> 'a) -> ('a, [ `Timeout ]) result =
+   fun duration f -> Eio.Time.with_timeout clock duration (fun () -> Ok (f ()))
+  in
+  { client; token; timeout }
 
 let cohttp_meth (meth : string) =
   match meth with
@@ -122,10 +131,21 @@ let send (t : t) ?(headers = []) ?(body : string option)
       @ headers)
   in
   let body = Option.map Cohttp_eio.Body.of_string body in
-  Eio.Switch.run @@ fun sw ->
-  let resp, resp_body =
-    Cohttp_eio.Client.call t.client ~sw ?body ~headers:all_headers
-      (cohttp_meth meth) uri
+  let response =
+    t.timeout request_timeout (fun () ->
+        Eio.Switch.run @@ fun sw ->
+        let resp, resp_body =
+          Cohttp_eio.Client.call t.client ~sw ?body ~headers:all_headers
+            (cohttp_meth meth) uri
+        in
+        let body =
+          Eio.Buf_read.(parse_exn take_all) resp_body ~max_size:10_000_000
+        in
+        (resp, body))
   in
-  let body = Eio.Buf_read.(parse_exn take_all) resp_body ~max_size:10_000_000 in
-  (resp, body)
+  match response with
+  | Ok response -> response
+  | Error `Timeout ->
+      failwith
+        (Printf.sprintf "rest: %s %s timed out after %.0fs" meth path
+           request_timeout)
