@@ -2543,9 +2543,15 @@ include (
     let on_guild_update (c : t) (f : t -> Guild.t option -> Guild.t -> unit) :
         unit =
       add_handler c Discord_private.P_event.Guild_update (fun t snap json ->
-          match Guild.of_yojson json with
-          | Ok guild -> f t snap.guild guild
-          | Error msg -> log_decode_error c "GUILD_UPDATE" msg)
+          match snap.guild with
+          | Some cached -> (
+              match Guild.merge cached json with
+              | Ok guild -> f t snap.guild guild
+              | Error msg -> log_decode_error c "GUILD_UPDATE" msg)
+          | None -> (
+              match Guild.of_yojson json with
+              | Ok guild -> f t snap.guild guild
+              | Error msg -> log_decode_error c "GUILD_UPDATE" msg))
 
     let on_guild_delete (c : t) (f : t -> Event_payload.Guild_delete.t -> unit)
         : unit =
