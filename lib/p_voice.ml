@@ -66,7 +66,14 @@ let on_state_change (t : t) (f : t -> state -> unit) : unit =
 let set_state (t : t) (state : state) : unit =
   t.state <- state;
   List.iter
-    (fun f -> Eio.Fiber.fork ~sw:t.sw (fun () -> f t state))
+    (fun f ->
+      Eio.Fiber.fork ~sw:t.sw (fun () ->
+          try f t state with
+          | Eio.Cancel.Cancelled _ as exn -> raise exn
+          | exn ->
+              prerr_endline
+                ("discordml: voice state handler raised: "
+               ^ Printexc.to_string exn)))
     (Atomic.get t.state_handlers)
 
 let send_json (t : t) (json : Yojson.Safe.t) : unit =
@@ -473,16 +480,13 @@ let handle_dave_json (t : t) (op : int) (json : Yojson.Safe.t) : unit =
 let handle_dave_binary (t : t) (op : int) (payload : string) : unit =
   match op with
   | 25 -> dave_set_external_sender t payload
-  | 27 ->
-      if String.length payload >= 1 then begin
-        let proposals = String.sub payload 1 (String.length payload - 1) in
-        match t.dave with
-        | None -> ()
-        | Some session ->
-            let commit = P_dave.session_process_proposals session proposals in
-            if String.length commit > 0 then
-              send_binary t (String.make 1 (Char.chr 28) ^ commit)
-      end
+  | 27 -> (
+      match t.dave with
+      | Some session when String.length payload >= 1 ->
+          let commit = P_dave.session_process_proposals session payload in
+          if String.length commit > 0 then
+            send_binary t (String.make 1 (Char.chr 28) ^ commit)
+      | _ -> ())
   | 29 ->
       if String.length payload >= 2 then begin
         let transition_id =
@@ -609,16 +613,22 @@ let send_identify (t : t) ~(session_id : string) ~(token : string) : unit =
   send_json t (`Assoc [ ("op", `Int 0); ("d", d) ])
 
 let connection_url (endpoint : string) : string =
-  let endpoint =
+  let scheme, host =
     if String.length endpoint >= 6 && String.sub endpoint 0 6 = "wss://" then
-      String.sub endpoint 6 (String.length endpoint - 6)
+      ("wss://", String.sub endpoint 6 (String.length endpoint - 6))
     else if String.length endpoint >= 5 && String.sub endpoint 0 5 = "ws://"
-    then String.sub endpoint 5 (String.length endpoint - 5)
-    else endpoint
+    then ("ws://", String.sub endpoint 5 (String.length endpoint - 5))
+    else ("wss://", endpoint)
   in
-  match String.index_opt endpoint '?' with
-  | Some i -> String.sub endpoint 0 i ^ "/?v=8"
-  | None -> endpoint ^ "/?v=8"
+  let host =
+    match String.index_opt host '/' with
+    | Some i -> String.sub host 0 i
+    | None -> (
+        match String.index_opt host '?' with
+        | Some i -> String.sub host 0 i
+        | None -> host)
+  in
+  scheme ^ host ^ "/?v=8"
 
 let rec listen (t : t) (sw : Eio.Switch.t) (conn : Discord_private.P_ws.t) :
     unit =

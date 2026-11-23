@@ -155,7 +155,7 @@ include (
       loop []
 
     type t = {
-      flow : Tls_eio.t;
+      flow : Eio.Flow.two_way_ty Eio.Resource.t;
       reader : Eio.Buf_read.t;
       mutable closed : bool;
     }
@@ -413,7 +413,6 @@ include (
         t =
       ensure_rng ();
       let u = parse_uri url in
-      let config = tls_config () in
       let addr =
         match
           Eio.Net.getaddrinfo_stream net u.host ~service:(string_of_int u.port)
@@ -422,10 +421,13 @@ include (
         | [] -> failwith ("websocket: could not resolve " ^ u.host)
       in
       let raw = Eio.Net.connect ~sw net addr in
-      let flow =
-        Tls_eio.client_of_flow config
-          ~host:(Domain_name.host_exn (Domain_name.of_string_exn u.host))
-          raw
+      let flow : Eio.Flow.two_way_ty Eio.Resource.t =
+        if u.secure then
+          (Tls_eio.client_of_flow (tls_config ())
+             ~host:(Domain_name.host_exn (Domain_name.of_string_exn u.host))
+             raw
+            :> Eio.Flow.two_way_ty Eio.Resource.t)
+        else (raw :> Eio.Flow.two_way_ty Eio.Resource.t)
       in
       let key = base64_encode (Mirage_crypto_rng.generate 16) in
       let host_header =
