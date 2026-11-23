@@ -338,6 +338,7 @@ include (
 
     type t = {
       mutable token : string option;
+          [@printer fun fmt _ -> Format.pp_print_string fmt "<redacted>"]
       intents : int;
       guilds : (string, Guild.t) Hashtbl.t;
           [@printer
