@@ -86,6 +86,15 @@ include (
     }
     [@@deriving show]
 
+    let random_state =
+      lazy
+        (Mirage_crypto_rng_unix.use_default ();
+         let seed = Mirage_crypto_rng.generate 16 in
+         Random.State.make (Array.init 16 (fun i -> Char.code seed.[i])))
+
+    let random_float (bound : float) : float =
+      Random.State.float (Lazy.force random_state) bound
+
     let connect ~(url : string) ~(id : int) ~(num_shards : int)
         ~(token : string) ~(intents : int) : t =
       {
@@ -200,7 +209,7 @@ include (
       match t.heartbeat_interval with
       | None -> ()
       | Some interval ->
-          Eio.Time.sleep clock (interval *. Random.float 1.);
+          Eio.Time.sleep clock (interval *. random_float 1.);
           let rec loop first =
             if (not first) && not t.acked then begin
               P_ws.close conn;
@@ -304,7 +313,7 @@ include (
           { action = Reconnect; clear_session = false; delay = Backoff }
 
     let run ~dispatch ~(net : 'a Eio.Net.t) clock (t : t) : unit =
-      let jitter d = d *. (0.5 +. Random.float 1.) in
+      let jitter d = d *. (0.5 +. random_float 1.) in
       let rec loop delay =
         let resume_attempted = t.session_id <> None && t.seq <> None in
         let url =
@@ -339,6 +348,11 @@ include (
             | Socket_closed (P_ws.Authentication_failed, _) ->
                 prerr_endline
                   "shard: authentication failed (check the bot token)"
+            | Socket_closed (code, detail) ->
+                prerr_endline
+                  (Printf.sprintf "shard %d: fatal gateway close: %s%s" t.id
+                     (P_ws.show_close_code code)
+                     (if detail = "" then "" else " (" ^ detail ^ ")"))
             | _ -> ())
         | Reconnect ->
             let wait = if t.established then base_delay else delay in
@@ -347,7 +361,7 @@ include (
             let seconds =
               match plan.delay with
               | Backoff -> jitter wait
-              | Jitter (lo, hi) -> lo +. Random.float (hi -. lo)
+              | Jitter (lo, hi) -> lo +. random_float (hi -. lo)
             in
             Eio.Time.sleep clock seconds;
             loop next_delay
