@@ -26,6 +26,8 @@ module type Intent = sig
   val standard : t
   val all : t
   val has : t -> t -> bool
+  val has_any : t -> t -> bool
+  val has_all : t -> t -> bool
 end
 
 include (
@@ -65,6 +67,8 @@ include (
       lor direct_message_polls
 
     let all = standard lor privileged
-    let has (intents : t) (flag : t) : bool = intents land flag = flag
+    let has_any (intents : t) (flags : t) : bool = intents land flags <> 0
+    let has_all (intents : t) (flags : t) : bool = intents land flags = flags
+    let has = has_all
   end :
     Intent)

@@ -88,7 +88,7 @@ module type Message = sig
   val pp : Format.formatter -> t -> unit
   val show : t -> string
   val reply : Rest.t -> t -> string -> unit
-  val reply_file : Rest.t -> t -> Attachment.t -> unit
+  val reply_file : Rest.t -> t -> Attachment.Upload.t -> unit
   val edit : Rest.t -> t -> string -> unit
   val delete : Rest.t -> t -> unit
 
@@ -451,7 +451,8 @@ include (
       if code < 200 || code >= 300 then
         failwith (Printf.sprintf "POST %s: HTTP %d: %s" path code resp)
 
-    let reply_file (rest : Rest.t) (m : t) (attachment : Attachment.t) : unit =
+    let reply_file (rest : Rest.t) (m : t) (upload : Attachment.Upload.t) : unit
+        =
       let path = "/channels/" ^ m.channel_id ^ "/messages" in
       let body =
         `Assoc
@@ -460,9 +461,9 @@ include (
       in
       let files =
         [
-          ( Attachment.name attachment,
-            Attachment.content attachment,
-            Attachment.content_type attachment );
+          ( Attachment.Upload.name upload,
+            Attachment.Upload.content upload,
+            Attachment.Upload.content_type upload );
         ]
       in
       let code, resp = Rest.request rest ~body ~files Rest.Post path in

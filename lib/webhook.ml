@@ -60,7 +60,7 @@ module type Webhook = sig
     ?tts:bool ->
     ?embeds:Yojson.Safe.t list ->
     ?components:Yojson.Safe.t list ->
-    ?files:Attachment.t list ->
+    ?files:Attachment.Upload.t list ->
     ?thread_id:string ->
     ?wait:bool ->
     unit ->
@@ -254,10 +254,10 @@ include (
         | None -> []
         | Some attachments ->
             List.map
-              (fun (a : Attachment.t) ->
-                ( Attachment.name a,
-                  Attachment.content a,
-                  Attachment.content_type a ))
+              (fun (upload : Attachment.Upload.t) ->
+                ( Attachment.Upload.name upload,
+                  Attachment.Upload.content upload,
+                  Attachment.Upload.content_type upload ))
               attachments
       in
       let code, resp = Rest.request rest ~body ~files Rest.Post path in

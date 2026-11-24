@@ -172,7 +172,7 @@ module type Interaction = sig
     ?tts:bool ->
     ?ephemeral:bool ->
     ?allowed_mentions:allowed_mentions ->
-    ?files:Attachment.t list ->
+    ?files:Attachment.Upload.t list ->
     unit ->
     unit
 
@@ -186,7 +186,7 @@ module type Interaction = sig
     ?embeds:Embed.t list ->
     ?components:Component.t list ->
     ?allowed_mentions:allowed_mentions ->
-    ?files:Attachment.t list ->
+    ?files:Attachment.Upload.t list ->
     unit ->
     unit
 
@@ -209,7 +209,7 @@ module type Interaction = sig
     ?tts:bool ->
     ?ephemeral:bool ->
     ?allowed_mentions:allowed_mentions ->
-    ?files:Attachment.t list ->
+    ?files:Attachment.Upload.t list ->
     unit ->
     Message.t
 
@@ -220,7 +220,7 @@ module type Interaction = sig
     ?embeds:Embed.t list ->
     ?components:Component.t list ->
     ?allowed_mentions:allowed_mentions ->
-    ?files:Attachment.t list ->
+    ?files:Attachment.Upload.t list ->
     unit ->
     Message.t
 
@@ -234,7 +234,7 @@ module type Interaction = sig
     ?embeds:Embed.t list ->
     ?components:Component.t list ->
     ?allowed_mentions:allowed_mentions ->
-    ?files:Attachment.t list ->
+    ?files:Attachment.Upload.t list ->
     unit ->
     Message.t
 
@@ -738,9 +738,11 @@ include (
 
     let optional_list (key : string) (value : Yojson.Safe.t list option) :
         (string * Yojson.Safe.t) list =
-      match value with
-      | None | Some [] -> []
-      | Some value -> [ (key, `List value) ]
+      match value with None -> [] | Some value -> [ (key, `List value) ]
+
+    let optional_nonempty_list (key : string) (value : Yojson.Safe.t list) :
+        (string * Yojson.Safe.t) list =
+      match value with [] -> [] | value -> [ (key, `List value) ]
 
     let embed_author_to_yojson (author : Embed.Author.t) : Yojson.Safe.t =
       `Assoc
@@ -802,8 +804,8 @@ include (
         @ optional_object "provider" embed_provider_to_yojson
             (Embed.provider embed)
         @ optional_object "author" embed_author_to_yojson (Embed.author embed)
-        @ optional_list "fields"
-            (Some (List.map embed_field_to_yojson (Embed.fields embed))))
+        @ optional_nonempty_list "fields"
+            (List.map embed_field_to_yojson (Embed.fields embed)))
 
     let emoji_to_yojson (emoji : Emoji.t) : Yojson.Safe.t =
       `Assoc
@@ -864,10 +866,8 @@ include (
            ("type", `Int type_);
            ("custom_id", `String (Component.Select.custom_id select));
          ]
-        @ optional_list "options"
-            (Some
-               (List.map select_option_to_yojson
-                  (Component.Select.options select)))
+        @ optional_nonempty_list "options"
+            (List.map select_option_to_yojson (Component.Select.options select))
         @ optional_string "placeholder" (Component.Select.placeholder select)
         @ [
             ("min_values", `Int (Component.Select.min_values select));
@@ -875,15 +875,13 @@ include (
             ("disabled", `Bool (Component.Select.disabled select));
           ]
         @ optional_bool "required" (Component.Select.required select)
-        @ optional_list "channel_types"
-            (Some
-               (List.map
-                  (fun channel_type -> `Int channel_type)
-                  (Component.Select.channel_types select)))
-        @ optional_list "default_values"
-            (Some
-               (List.map default_value_to_yojson
-                  (Component.Select.default_values select))))
+        @ optional_nonempty_list "channel_types"
+            (List.map
+               (fun channel_type -> `Int channel_type)
+               (Component.Select.channel_types select))
+        @ optional_nonempty_list "default_values"
+            (List.map default_value_to_yojson
+               (Component.Select.default_values select)))
 
     let button_to_yojson (button : Component.Button.t) : Yojson.Safe.t =
       `Assoc
@@ -974,14 +972,14 @@ include (
         | Some mentions ->
             [ ("allowed_mentions", allowed_mentions_to_yojson mentions) ])
 
-    let file_parts (attachments : Attachment.t list) :
+    let file_parts (uploads : Attachment.Upload.t list) :
         (string * string * string option) list =
       List.map
-        (fun attachment ->
-          ( Attachment.name attachment,
-            Attachment.content attachment,
-            Attachment.content_type attachment ))
-        attachments
+        (fun upload ->
+          ( Attachment.Upload.name upload,
+            Attachment.Upload.content upload,
+            Attachment.Upload.content_type upload ))
+        uploads
 
     let send_json (rest : Rest.t) ?(files = []) (meth : Rest.meth)
         (path : string) (body : string) : int * string =
