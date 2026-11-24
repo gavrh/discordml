@@ -2,6 +2,7 @@
 #include <caml/fail.h>
 #include <caml/memory.h>
 #include <caml/mlvalues.h>
+#include <caml/threads.h>
 
 #include <stdint.h>
 #include <stdio.h>
@@ -168,8 +169,11 @@ value caml_p_opus_encode(value encoder, value pcm) {
     for (mlsize_t i = 0; i < len; i++)
         samples[i] = (int16_t)Long_val(Field(pcm, i));
     unsigned char out[4000];
-    int written = p_opus_encode(encoder_val(encoder), samples, frame_size, out,
-                                (int)sizeof(out));
+    OpusEncoder *enc = encoder_val(encoder);
+    caml_enter_blocking_section();
+    int written =
+        p_opus_encode(enc, samples, frame_size, out, (int)sizeof(out));
+    caml_leave_blocking_section();
     free(samples);
     if (written < 0)
         caml_failwith(p_opus_strerror(written));

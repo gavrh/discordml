@@ -868,46 +868,94 @@ let send_audio (t : t) (opus : string) : bool =
       end
   | _ -> false
 
+let playback_frame_seconds = 0.02
+let playback_frame_length = 960 * 2
+
+let next_deadline (t : t) (deadline : float) : float =
+  let now = Eio.Time.now t.clock in
+  let deadline = if deadline < now then now else deadline in
+  let next = deadline +. playback_frame_seconds in
+  if next > now then Eio.Time.sleep t.clock (next -. now);
+  next
+
 let play (t : t) ~(source : unit -> int array option) : unit =
-  match t.voice_sw with
-  | None -> failwith "voice: not connected"
-  | Some sw ->
-      if not (P_opus.available ()) then
-        failwith ("voice: " ^ P_opus.load_error ());
-      Eio.Fiber.fork ~sw (fun () ->
-          let encoder = P_opus.encoder_create () in
-          let speaking = ref false in
-          let start_speaking () =
-            if not !speaking then speaking := send_speaking t ~speaking:true
+  let sw =
+    match t.voice_sw with
+    | Some sw when t.state = Connected && not t.stopping -> sw
+    | _ ->
+        failwith
+          "voice: not connected; wait for the Connected state before calling \
+           play"
+  in
+  if not (P_opus.available ()) then failwith ("voice: " ^ P_opus.load_error ());
+  Eio.Fiber.fork ~sw (fun () ->
+      let encoder = P_opus.encoder_create () in
+      let speaking = ref false in
+      let warned_bad_frame = ref false in
+      let warned_send_failure = ref false in
+      let warn_once (warned : bool ref) message =
+        if not !warned then begin
+          warned := true;
+          prerr_endline ("discordml: voice: " ^ message)
+        end
+      in
+      let start_speaking () =
+        if not !speaking then speaking := send_speaking t ~speaking:true
+      in
+      let stop_speaking () =
+        if !speaking then begin
+          speaking := false;
+          (try ignore (send_speaking t ~speaking:false) with _ -> ());
+          t.speaking <- false
+        end
+      in
+      let play_silence deadline =
+        if !speaking then begin
+          let deadline = ref deadline in
+          for _ = 1 to 5 do
+            if not (send_audio t "\xF8\xFF\xFE") then
+              warn_once warned_send_failure
+                "could not send end-of-stream silence";
+            deadline := next_deadline t !deadline
+          done;
+          stop_speaking ()
+        end
+      in
+      Fun.protect
+        ~finally:(fun () ->
+          (try stop_speaking () with _ -> ());
+          P_opus.encoder_destroy encoder)
+        (fun () ->
+          let rec loop deadline =
+            match source () with
+            | None -> play_silence deadline
+            | Some pcm ->
+                if Array.length pcm = playback_frame_length then begin
+                  start_speaking ();
+                  try
+                    if not (send_audio t (P_opus.encode encoder pcm)) then
+                      warn_once warned_send_failure
+                        "skipping frame that could not be sent"
+                  with
+                  | Eio.Cancel.Cancelled _ as exn -> raise exn
+                  | exn ->
+                      warn_once warned_bad_frame
+                        ("skipping frame that could not be encoded or sent: "
+                       ^ Printexc.to_string exn)
+                end
+                else
+                  warn_once warned_bad_frame
+                    ("skipping PCM frame with "
+                    ^ string_of_int (Array.length pcm)
+                    ^ " samples; expected "
+                    ^ string_of_int playback_frame_length);
+                loop (next_deadline t deadline)
           in
-          let stop_speaking () =
-            if !speaking then begin
-              ignore (send_speaking t ~speaking:false);
-              speaking := false
-            end
-          in
-          Fun.protect
-            ~finally:(fun () ->
-              (try stop_speaking () with _ -> ());
-              P_opus.encoder_destroy encoder)
-            (fun () ->
-              let rec loop () =
-                match source () with
-                | None ->
-                    if !speaking then begin
-                      for _ = 1 to 5 do
-                        ignore (send_audio t "\xF8\xFF\xFE");
-                        Eio.Time.sleep t.clock 0.02
-                      done;
-                      stop_speaking ()
-                    end
-                | Some pcm ->
-                    start_speaking ();
-                    ignore (send_audio t (P_opus.encode encoder pcm));
-                    Eio.Time.sleep t.clock 0.02;
-                    loop ()
-              in
-              loop ()))
+          try loop (Eio.Time.now t.clock) with
+          | Eio.Cancel.Cancelled _ as exn -> raise exn
+          | exn ->
+              prerr_endline
+                ("discordml: voice: playback stopped: " ^ Printexc.to_string exn)))
 
 let set_self_mute (t : t) (mute : bool) : unit =
   t.self_mute <- mute;
