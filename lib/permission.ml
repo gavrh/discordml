@@ -3,8 +3,11 @@ module type Permission = sig
 
   val of_yojson : Yojson.Safe.t -> t
   val of_string : string -> t
+  val of_string_result : string -> (t, string) result
   val to_string : t -> string
   val has : t -> t -> bool
+  val has_any : t -> t -> bool
+  val has_all : t -> t -> bool
   val create_instant_invite : t
   val kick_members : t
   val ban_members : t
@@ -110,11 +113,35 @@ include (
     let use_external_sounds = bit 45
     let send_voice_messages = bit 46
 
+    let of_string_result (s : string) : (t, string) result =
+      match Int64.of_string_opt s with
+      | Some value -> Ok value
+      | None -> Error ("invalid permission string: " ^ s)
+
+    let reported_invalid : string list Atomic.t = Atomic.make []
+
+    let report_invalid (s : string) : unit =
+      let rec report () =
+        let reported = Atomic.get reported_invalid in
+        if List.mem s reported then ()
+        else if Atomic.compare_and_set reported_invalid reported (s :: reported)
+        then
+          prerr_endline ("Permission.of_string: invalid permission string: " ^ s)
+        else report ()
+      in
+      report ()
+
     let of_string (s : string) : t =
-      match Int64.of_string_opt s with Some v -> v | None -> 0L
+      match of_string_result s with
+      | Ok value -> value
+      | Error _ ->
+          report_invalid s;
+          0L
 
     let to_string (t : t) : string = Int64.to_string t
-    let has (t : t) (flag : t) : bool = Int64.logand t flag <> 0L
+    let has_any (t : t) (flags : t) : bool = Int64.logand t flags <> 0L
+    let has_all (t : t) (flags : t) : bool = Int64.logand t flags = flags
+    let has = has_any
 
     let of_yojson (json : Yojson.Safe.t) : t =
       match json with
