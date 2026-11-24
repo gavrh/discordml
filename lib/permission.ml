@@ -118,16 +118,23 @@ include (
       | Some value -> Ok value
       | None -> Error ("invalid permission string: " ^ s)
 
+    let max_reported_invalid = 64
     let reported_invalid : string list Atomic.t = Atomic.make []
 
     let report_invalid (s : string) : unit =
       let rec report () =
         let reported = Atomic.get reported_invalid in
         if List.mem s reported then ()
-        else if Atomic.compare_and_set reported_invalid reported (s :: reported)
-        then
-          prerr_endline ("Permission.of_string: invalid permission string: " ^ s)
-        else report ()
+        else
+          let recent =
+            List.filteri
+              (fun index _ -> index < max_reported_invalid - 1)
+              reported
+          in
+          if Atomic.compare_and_set reported_invalid reported (s :: recent) then
+            prerr_endline
+              ("Permission.of_string: invalid permission string: " ^ s)
+          else report ()
       in
       report ()
 
