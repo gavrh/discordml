@@ -203,6 +203,8 @@ include (
       in
       match result with Ok () -> () | Error exn -> raise exn
 
+    exception Oversized_frame
+
     let read_frame (t : t) : bool * int * string =
       let hdr = Eio.Buf_read.take 2 t.reader in
       let b0 = Char.code hdr.[0] and b1 = Char.code hdr.[1] in
@@ -225,7 +227,7 @@ include (
           !v
       in
       let mask = if masked then Some (Eio.Buf_read.take 4 t.reader) else None in
-      if len > max_message_size then failwith "websocket: frame too large";
+      if len > max_message_size then raise Oversized_frame;
       let payload = if len = 0 then "" else Eio.Buf_read.take len t.reader in
       let payload =
         match mask with
@@ -378,6 +380,9 @@ include (
       if t.closed then Closed (Abnormal, "")
       else
         match read_frame t with
+        | exception Oversized_frame ->
+            t.closed <- true;
+            Closed (Message_too_big, "message too large")
         | exception End_of_file ->
             t.closed <- true;
             Closed (Abnormal, "")
@@ -393,47 +398,45 @@ include (
                 recv t
             | op when op = op_pong -> recv t
             | _ ->
-                if String.length payload > max_message_size then begin
-                  t.closed <- true;
-                  Closed (Message_too_big, "message too large")
-                end
-                else
-                  let buf = Buffer.create 256 in
-                  Buffer.add_string buf payload;
-                  let rec more () =
-                    if fin then Data (Buffer.contents buf)
-                    else
-                      match read_frame t with
-                      | fin', op', p' -> (
-                          match op' with
-                          | op when op = op_close ->
-                              let code, reason = parse_close p' in
-                              (try send_frame t op_close "" with _ -> ());
+                let buf = Buffer.create 256 in
+                Buffer.add_string buf payload;
+                let rec more () =
+                  if fin then Data (Buffer.contents buf)
+                  else
+                    match read_frame t with
+                    | fin', op', p' -> (
+                        match op' with
+                        | op when op = op_close ->
+                            let code, reason = parse_close p' in
+                            (try send_frame t op_close "" with _ -> ());
+                            t.closed <- true;
+                            Closed (code, reason)
+                        | op when op = op_ping ->
+                            send_frame t op_pong p';
+                            more ()
+                        | op when op = op_pong -> more ()
+                        | _ ->
+                            if
+                              Buffer.length buf + String.length p'
+                              > max_message_size
+                            then begin
                               t.closed <- true;
-                              Closed (code, reason)
-                          | op when op = op_ping ->
-                              send_frame t op_pong p';
-                              more ()
-                          | op when op = op_pong -> more ()
-                          | _ ->
-                              if
-                                Buffer.length buf + String.length p'
-                                > max_message_size
-                              then begin
-                                t.closed <- true;
-                                Closed (Message_too_big, "message too large")
-                              end
-                              else begin
-                                Buffer.add_string buf p';
-                                more' fin'
-                              end)
-                      | exception End_of_file ->
-                          t.closed <- true;
-                          Closed (Abnormal, "")
-                  and more' fin' =
-                    if fin' then Data (Buffer.contents buf) else more ()
-                  in
-                  more ())
+                              Closed (Message_too_big, "message too large")
+                            end
+                            else begin
+                              Buffer.add_string buf p';
+                              more' fin'
+                            end)
+                    | exception Oversized_frame ->
+                        t.closed <- true;
+                        Closed (Message_too_big, "message too large")
+                    | exception End_of_file ->
+                        t.closed <- true;
+                        Closed (Abnormal, "")
+                and more' fin' =
+                  if fin' then Data (Buffer.contents buf) else more ()
+                in
+                more ())
 
     let send_text (t : t) (s : string) : unit = send_frame t op_text s
     let send_binary (t : t) (s : string) : unit = send_frame t op_binary s
