@@ -892,9 +892,10 @@ let play (t : t) ~(source : unit -> int array option) : unit =
       let encoder = P_opus.encoder_create () in
       let speaking = ref false in
       let warned_bad_frame = ref false in
-      let warn_bad_frame message =
-        if not !warned_bad_frame then begin
-          warned_bad_frame := true;
+      let warned_send_failure = ref false in
+      let warn_once (warned : bool ref) message =
+        if not !warned then begin
+          warned := true;
           prerr_endline ("discordml: voice: " ^ message)
         end
       in
@@ -912,7 +913,9 @@ let play (t : t) ~(source : unit -> int array option) : unit =
         if !speaking then begin
           let deadline = ref deadline in
           for _ = 1 to 5 do
-            ignore (send_audio t "\xF8\xFF\xFE");
+            if not (send_audio t "\xF8\xFF\xFE") then
+              warn_once warned_send_failure
+                "could not send end-of-stream silence";
             deadline := next_deadline t !deadline
           done;
           stop_speaking ()
@@ -929,15 +932,19 @@ let play (t : t) ~(source : unit -> int array option) : unit =
             | Some pcm ->
                 if Array.length pcm = playback_frame_length then begin
                   start_speaking ();
-                  try ignore (send_audio t (P_opus.encode encoder pcm)) with
+                  try
+                    if not (send_audio t (P_opus.encode encoder pcm)) then
+                      warn_once warned_send_failure
+                        "skipping frame that could not be sent"
+                  with
                   | Eio.Cancel.Cancelled _ as exn -> raise exn
                   | exn ->
-                      warn_bad_frame
+                      warn_once warned_bad_frame
                         ("skipping frame that could not be encoded or sent: "
                        ^ Printexc.to_string exn)
                 end
                 else
-                  warn_bad_frame
+                  warn_once warned_bad_frame
                     ("skipping PCM frame with "
                     ^ string_of_int (Array.length pcm)
                     ^ " samples; expected "
