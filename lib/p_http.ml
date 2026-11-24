@@ -24,6 +24,7 @@ type t = {
 let request_timeout : float = 30.
 let idle_timeout : float = 30.
 let max_idle_per_host : int = 2
+let max_response_body : int = 10_000_000
 let endpoint : string = "https://discord.com/api/v10"
 
 let user_agent : string =
@@ -237,20 +238,26 @@ let response_body (response : Cohttp.Response.t) (reader : Eio.Buf_read.t) :
     string =
   match Cohttp.Response.has_body response with
   | `No -> ""
-  | `Yes | `Unknown ->
-      let body_reader = Response_io.make_body_reader response reader in
-      let buffer = Buffer.create 1024 in
-      let rec loop () =
-        match Response_io.read_body_chunk body_reader with
-        | Cohttp.Transfer.Done -> ()
-        | Chunk chunk | Final_chunk chunk ->
-            Buffer.add_string buffer chunk;
-            if Buffer.length buffer > 10_000_000 then
-              failwith "rest: response body too large";
-            loop ()
-      in
-      loop ();
-      Buffer.contents buffer
+  | `Yes | `Unknown -> (
+      match Cohttp.Response.encoding response with
+      | Cohttp.Transfer.Fixed length
+        when length > Int64.of_int max_response_body ->
+          failwith "rest: response body too large"
+      | _ ->
+          let body_reader = Response_io.make_body_reader response reader in
+          let buffer = Buffer.create 1024 in
+          let rec loop () =
+            match Response_io.read_body_chunk body_reader with
+            | Cohttp.Transfer.Done -> ()
+            | Chunk chunk | Final_chunk chunk ->
+                if
+                  Buffer.length buffer + String.length chunk > max_response_body
+                then failwith "rest: response body too large";
+                Buffer.add_string buffer chunk;
+                loop ()
+          in
+          loop ();
+          Buffer.contents buffer)
 
 let exchange (entry : idle_connection) ~(meth : Cohttp.Code.meth)
     ~(headers : Http.Header.t) ~(body : string option) (uri : Uri.t) :
