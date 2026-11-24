@@ -3379,8 +3379,7 @@ include (
       c.rest <- Some rest;
       let info = Rest.gateway_bot rest in
       c.num_shards <- info.shards;
-      if info.shards > info.sessions_remaining then
-        Eio.Time.sleep clock info.sessions_reset_after;
+      let session_limit_waited = ref false in
       let open Yojson.Safe.Util in
       let dispatch (name : string) (json : Yojson.Safe.t) : unit =
         match Discord_private.P_event.of_string name with
@@ -3503,6 +3502,16 @@ include (
       in
       let rec spawn i =
         if i < info.shards then begin
+          if i >= info.sessions_remaining && not !session_limit_waited then begin
+            session_limit_waited := true;
+            prerr_endline
+              (Printf.sprintf
+                 "discordml: gateway session start limit: %d session(s) \
+                  remaining for %d shard(s); starting the allowed shards and \
+                  waiting %.0fs before the rest"
+                 info.sessions_remaining info.shards info.sessions_reset_after);
+            Eio.Time.sleep clock info.sessions_reset_after
+          end;
           let shard =
             Discord_private.P_shard.connect ~url:info.url ~id:i
               ~num_shards:info.shards ~token ~intents:c.intents
