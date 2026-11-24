@@ -58,6 +58,7 @@ include (
     let op_ping = 0x9
     let op_pong = 0xA
     let ws_guid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+    let max_message_size = 8 * 1024 * 1024
 
     let b64_alphabet =
       "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
@@ -158,33 +159,49 @@ include (
       flow : Eio.Flow.two_way_ty Eio.Resource.t;
       reader : Eio.Buf_read.t;
       mutable closed : bool;
+      send_mutex : Eio.Mutex.t;
     }
 
-    let send_frame (t : t) (opcode : int) (payload : string) : unit =
+    let encode_frame (opcode : int) (payload : string) : string =
       let len = String.length payload in
-      let b = Buffer.create (14 + len) in
-      Buffer.add_char b (Char.chr (0x80 lor opcode));
-      if len < 126 then Buffer.add_char b (Char.chr (0x80 lor len))
+      let header_len = if len < 126 then 2 else if len < 65536 then 4 else 10 in
+      let frame = Bytes.create (header_len + 4 + len) in
+      Bytes.set frame 0 (Char.chr (0x80 lor opcode));
+      if len < 126 then Bytes.set frame 1 (Char.chr (0x80 lor len))
       else if len < 65536 then begin
-        Buffer.add_char b (Char.chr (0x80 lor 126));
-        Buffer.add_char b (Char.chr ((len lsr 8) land 0xff));
-        Buffer.add_char b (Char.chr (len land 0xff))
+        Bytes.set frame 1 (Char.chr (0x80 lor 126));
+        Bytes.set frame 2 (Char.chr ((len lsr 8) land 0xff));
+        Bytes.set frame 3 (Char.chr (len land 0xff))
       end
       else begin
-        Buffer.add_char b (Char.chr (0x80 lor 127));
+        Bytes.set frame 1 (Char.chr (0x80 lor 127));
         for i = 7 downto 0 do
-          Buffer.add_char b (Char.chr ((len lsr (8 * i)) land 0xff))
+          Bytes.set frame (2 + (7 - i)) (Char.chr ((len lsr (8 * i)) land 0xff))
         done
       end;
       let mask = Mirage_crypto_rng.generate 4 in
-      Buffer.add_string b mask;
-      let masked = Bytes.create len in
+      Bytes.blit_string mask 0 frame header_len 4;
       for i = 0 to len - 1 do
-        Bytes.set masked i
+        Bytes.set frame
+          (header_len + 4 + i)
           (Char.chr (Char.code payload.[i] lxor Char.code mask.[i mod 4]))
       done;
-      Buffer.add_bytes b masked;
-      Eio.Flow.copy_string (Buffer.contents b) t.flow
+      Bytes.unsafe_to_string frame
+
+    let send_frame (t : t) (opcode : int) (payload : string) : unit =
+      let result =
+        Eio.Mutex.use_rw ~protect:true t.send_mutex (fun () ->
+            try
+              Eio.Flow.copy_string (encode_frame opcode payload) t.flow;
+              Ok ()
+            with
+            | Eio.Cancel.Cancelled _ as exn -> Error exn
+            | exn ->
+                t.closed <- true;
+                (try Eio.Flow.shutdown t.flow `All with _ -> ());
+                Error exn)
+      in
+      match result with Ok () -> () | Error exn -> raise exn
 
     let read_frame (t : t) : bool * int * string =
       let hdr = Eio.Buf_read.take 2 t.reader in
@@ -208,13 +225,19 @@ include (
           !v
       in
       let mask = if masked then Some (Eio.Buf_read.take 4 t.reader) else None in
+      if len > max_message_size then failwith "websocket: frame too large";
       let payload = if len = 0 then "" else Eio.Buf_read.take len t.reader in
       let payload =
         match mask with
         | None -> payload
         | Some m ->
-            String.init len (fun i ->
-                Char.chr (Char.code payload.[i] lxor Char.code m.[i mod 4]))
+            let buf = Bytes.of_string payload in
+            for i = 0 to len - 1 do
+              Bytes.set buf i
+                (Char.chr
+                   (Char.code (Bytes.get buf i) lxor Char.code m.[i mod 4]))
+            done;
+            Bytes.unsafe_to_string buf
       in
       (fin, opcode, payload)
 
@@ -370,33 +393,47 @@ include (
                 recv t
             | op when op = op_pong -> recv t
             | _ ->
-                let buf = Buffer.create 256 in
-                Buffer.add_string buf payload;
-                let rec more () =
-                  if fin then Data (Buffer.contents buf)
-                  else
-                    match read_frame t with
-                    | fin', op', p' -> (
-                        match op' with
-                        | op when op = op_close ->
-                            let code, reason = parse_close p' in
-                            (try send_frame t op_close "" with _ -> ());
-                            t.closed <- true;
-                            Closed (code, reason)
-                        | op when op = op_ping ->
-                            send_frame t op_pong p';
-                            more ()
-                        | op when op = op_pong -> more ()
-                        | _ ->
-                            Buffer.add_string buf p';
-                            more' fin')
-                    | exception End_of_file ->
-                        t.closed <- true;
-                        Closed (Abnormal, "")
-                and more' fin' =
-                  if fin' then Data (Buffer.contents buf) else more ()
-                in
-                more ())
+                if String.length payload > max_message_size then begin
+                  t.closed <- true;
+                  Closed (Message_too_big, "message too large")
+                end
+                else
+                  let buf = Buffer.create 256 in
+                  Buffer.add_string buf payload;
+                  let rec more () =
+                    if fin then Data (Buffer.contents buf)
+                    else
+                      match read_frame t with
+                      | fin', op', p' -> (
+                          match op' with
+                          | op when op = op_close ->
+                              let code, reason = parse_close p' in
+                              (try send_frame t op_close "" with _ -> ());
+                              t.closed <- true;
+                              Closed (code, reason)
+                          | op when op = op_ping ->
+                              send_frame t op_pong p';
+                              more ()
+                          | op when op = op_pong -> more ()
+                          | _ ->
+                              if
+                                Buffer.length buf + String.length p'
+                                > max_message_size
+                              then begin
+                                t.closed <- true;
+                                Closed (Message_too_big, "message too large")
+                              end
+                              else begin
+                                Buffer.add_string buf p';
+                                more' fin'
+                              end)
+                      | exception End_of_file ->
+                          t.closed <- true;
+                          Closed (Abnormal, "")
+                  and more' fin' =
+                    if fin' then Data (Buffer.contents buf) else more ()
+                  in
+                  more ())
 
     let send_text (t : t) (s : string) : unit = send_frame t op_text s
     let send_binary (t : t) (s : string) : unit = send_frame t op_binary s
@@ -463,7 +500,7 @@ include (
                "websocket: bad Sec-WebSocket-Accept (expected %s, got %s)"
                expected got)
       | None -> failwith "websocket: missing Sec-WebSocket-Accept");
-      { flow; reader; closed = false }
+      { flow; reader; closed = false; send_mutex = Eio.Mutex.create () }
 
     let gateway_version : string = "10"
     let encoding : string = "json"
