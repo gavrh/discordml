@@ -83,7 +83,6 @@ include (
       mutable resume_gateway_url : string option;
       mutable established : bool;
       mutable conn : P_ws.t option; [@opaque]
-      send_mutex : Eio.Mutex.t; [@opaque]
     }
     [@@deriving show]
 
@@ -102,7 +101,6 @@ include (
         resume_gateway_url = None;
         established = false;
         conn = None;
-        send_mutex = Eio.Mutex.create ();
       }
 
     let session_id (t : t) : string option = t.session_id
@@ -117,11 +115,10 @@ include (
              (Int64.of_int num_shards))
 
     let send (t : t) (payload : Yojson.Safe.t) : unit =
-      Eio.Mutex.use_rw ~protect:true t.send_mutex (fun () ->
-          match t.conn with
-          | Some conn when not (P_ws.is_closed conn) ->
-              P_ws.send_text conn (Yojson.Safe.to_string payload)
-          | _ -> ())
+      match t.conn with
+      | Some conn when not (P_ws.is_closed conn) ->
+          P_ws.send_text conn (Yojson.Safe.to_string payload)
+      | _ -> ()
 
     let voice_state_update (t : t) ~(guild_id : string)
         ~(channel_id : string option) ~(self_mute : bool) ~(self_deaf : bool) :
