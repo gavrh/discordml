@@ -172,7 +172,7 @@ module type Interaction = sig
     ?tts:bool ->
     ?ephemeral:bool ->
     ?allowed_mentions:allowed_mentions ->
-    ?files:Attachment.t list ->
+    ?files:Attachment.Upload.t list ->
     unit ->
     unit
 
@@ -186,7 +186,7 @@ module type Interaction = sig
     ?embeds:Embed.t list ->
     ?components:Component.t list ->
     ?allowed_mentions:allowed_mentions ->
-    ?files:Attachment.t list ->
+    ?files:Attachment.Upload.t list ->
     unit ->
     unit
 
@@ -209,7 +209,7 @@ module type Interaction = sig
     ?tts:bool ->
     ?ephemeral:bool ->
     ?allowed_mentions:allowed_mentions ->
-    ?files:Attachment.t list ->
+    ?files:Attachment.Upload.t list ->
     unit ->
     Message.t
 
@@ -220,7 +220,7 @@ module type Interaction = sig
     ?embeds:Embed.t list ->
     ?components:Component.t list ->
     ?allowed_mentions:allowed_mentions ->
-    ?files:Attachment.t list ->
+    ?files:Attachment.Upload.t list ->
     unit ->
     Message.t
 
@@ -234,7 +234,7 @@ module type Interaction = sig
     ?embeds:Embed.t list ->
     ?components:Component.t list ->
     ?allowed_mentions:allowed_mentions ->
-    ?files:Attachment.t list ->
+    ?files:Attachment.Upload.t list ->
     unit ->
     Message.t
 
@@ -972,14 +972,14 @@ include (
         | Some mentions ->
             [ ("allowed_mentions", allowed_mentions_to_yojson mentions) ])
 
-    let file_parts (attachments : Attachment.t list) :
+    let file_parts (uploads : Attachment.Upload.t list) :
         (string * string * string option) list =
       List.map
-        (fun attachment ->
-          ( Attachment.name attachment,
-            Attachment.content attachment,
-            Attachment.content_type attachment ))
-        attachments
+        (fun upload ->
+          ( Attachment.Upload.name upload,
+            Attachment.Upload.content upload,
+            Attachment.Upload.content_type upload ))
+        uploads
 
     let send_json (rest : Rest.t) ?(files = []) (meth : Rest.meth)
         (path : string) (body : string) : int * string =

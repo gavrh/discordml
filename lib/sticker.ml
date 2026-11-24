@@ -21,7 +21,7 @@ module type Sticker = sig
     guild_id:string ->
     name:string ->
     tags:string ->
-    file:Attachment.t ->
+    file:Attachment.Upload.t ->
     ?description:string ->
     unit ->
     t
@@ -113,7 +113,7 @@ include (
       decode_list path resp
 
     let create (rest : Rest.t) ~(guild_id : string) ~(name : string)
-        ~(tags : string) ~(file : Attachment.t) ?description () : t =
+        ~(tags : string) ~(file : Attachment.Upload.t) ?description () : t =
       let path = "/guilds/" ^ guild_id ^ "/stickers" in
       let body =
         `Assoc
@@ -126,9 +126,9 @@ include (
       in
       let files =
         [
-          ( Attachment.name file,
-            Attachment.content file,
-            Attachment.content_type file );
+          ( Attachment.Upload.name file,
+            Attachment.Upload.content file,
+            Attachment.Upload.content_type file );
         ]
       in
       let code, resp =

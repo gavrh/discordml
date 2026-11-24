@@ -205,7 +205,7 @@ module type Channel = sig
   val create : string -> t
   val of_yojson : Yojson.Safe.t -> (t, string) result
   val send : Rest.t -> t -> string -> unit
-  val send_file : Rest.t -> t -> Attachment.t -> unit
+  val send_file : Rest.t -> t -> Attachment.Upload.t -> unit
   val fetch : Rest.t -> string -> t
   val pp : Format.formatter -> t -> unit
   val equal : t -> t -> bool
@@ -751,13 +751,14 @@ include (
       if code < 200 || code >= 300 then
         failwith (Printf.sprintf "POST %s: HTTP %d: %s" path code resp)
 
-    let send_file (rest : Rest.t) (c : t) (attachment : Attachment.t) : unit =
+    let send_file (rest : Rest.t) (c : t) (upload : Attachment.Upload.t) : unit
+        =
       let path = "/channels/" ^ (common_of c).id ^ "/messages" in
       let files =
         [
-          ( Attachment.name attachment,
-            Attachment.content attachment,
-            Attachment.content_type attachment );
+          ( Attachment.Upload.name upload,
+            Attachment.Upload.content upload,
+            Attachment.Upload.content_type upload );
         ]
       in
       let code, resp = Rest.request rest ~files Rest.Post path in
