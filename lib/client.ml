@@ -362,6 +362,7 @@ include (
           [@printer
             fun fmt tbl -> Format.fprintf fmt "[ ...%d ]" (Hashtbl.length tbl)]
       messages_mutex : Eio.Mutex.t; [@opaque]
+      message_order : (string, string Queue.t) Hashtbl.t; [@opaque]
       users : (string, User.t) Hashtbl.t;
           [@printer
             fun fmt tbl -> Format.fprintf fmt "[ ...%d ]" (Hashtbl.length tbl)]
@@ -782,14 +783,51 @@ include (
       Eio.Mutex.use_rw ~protect:true c.presences_mutex (fun () ->
           Hashtbl.replace c.presences (guild_id, user_id) p)
 
-    let put_message (c : t) (m : Message.t) : unit =
+    let message_cache_limit = 200
+
+    let remove_message_order (c : t) (channel_id : string) (message_id : string)
+        : unit =
+      match Hashtbl.find_opt c.message_order channel_id with
+      | None -> ()
+      | Some order ->
+          let kept = Queue.create () in
+          Queue.iter
+            (fun id -> if id <> message_id then Queue.push id kept)
+            order;
+          if Queue.is_empty kept then Hashtbl.remove c.message_order channel_id
+          else Hashtbl.replace c.message_order channel_id kept
+
+    let put_message (c : t) (m : Message.t) : string list =
       Eio.Mutex.use_rw ~protect:true c.messages_mutex (fun () ->
-          Hashtbl.replace c.messages (Message.channel_id m, Message.id m) m)
+          let channel_id = Message.channel_id m in
+          let message_id = Message.id m in
+          let existing = Hashtbl.mem c.messages (channel_id, message_id) in
+          Hashtbl.replace c.messages (channel_id, message_id) m;
+          if existing then []
+          else begin
+            let order =
+              match Hashtbl.find_opt c.message_order channel_id with
+              | Some order -> order
+              | None ->
+                  let order = Queue.create () in
+                  Hashtbl.replace c.message_order channel_id order;
+                  order
+            in
+            Queue.push message_id order;
+            let evicted = ref [] in
+            while Queue.length order > message_cache_limit do
+              let evicted_id = Queue.pop order in
+              Hashtbl.remove c.messages (channel_id, evicted_id);
+              evicted := evicted_id :: !evicted
+            done;
+            List.rev !evicted
+          end)
 
     let remove_message (c : t) (channel_id : string) (message_id : string) :
         unit =
       Eio.Mutex.use_rw ~protect:true c.messages_mutex (fun () ->
-          Hashtbl.remove c.messages (channel_id, message_id))
+          Hashtbl.remove c.messages (channel_id, message_id);
+          remove_message_order c channel_id message_id)
 
     let put_user (c : t) (u : User.t) : unit =
       Eio.Mutex.use_rw ~protect:true c.users_mutex (fun () ->
@@ -837,6 +875,10 @@ include (
               Hashtbl.replace c.messages (channel_id, message_id)
                 { message with reactions }
           | None -> ())
+
+    let cache_message (c : t) (m : Message.t) : unit =
+      let evicted = put_message c m in
+      drop_reactions c evicted
 
     let refresh_message_reactions (c : t) (m : Message.t) : unit =
       drop_reactions c [ Message.id m ];
@@ -1065,6 +1107,7 @@ include (
             (fun message_id ->
               Hashtbl.remove c.messages (channel_id, message_id))
             message_ids;
+          Hashtbl.remove c.message_order channel_id;
           message_ids)
 
     let string_set (items : 'a list) (id : 'a -> string) : String_set.t =
@@ -1099,6 +1142,9 @@ include (
             (fun (channel_id, _) m ->
               if String_set.mem channel_id channel_ids then None else Some m)
             c.messages;
+          String_set.iter
+            (fun channel_id -> Hashtbl.remove c.message_order channel_id)
+            channel_ids;
           message_ids)
 
     let string_list (json : Yojson.Safe.t) : string list =
@@ -1364,7 +1410,7 @@ include (
               with
               | Some cached -> (
                   let merged = P_message_update.apply cached update in
-                  put_message c merged;
+                  cache_message c merged;
                   match Message_update.reactions update with
                   | None -> ()
                   | Some _ -> refresh_message_reactions c merged)
@@ -3433,6 +3479,7 @@ include (
         presences_mutex = Eio.Mutex.create ();
         messages = Hashtbl.create 0;
         messages_mutex = Eio.Mutex.create ();
+        message_order = Hashtbl.create 0;
         users = Hashtbl.create 0;
         users_mutex = Eio.Mutex.create ();
         roles = Hashtbl.create 0;
@@ -3510,7 +3557,7 @@ include (
         | Some Discord_private.P_event.Message_create -> (
             match Message.of_yojson json with
             | Ok message ->
-                put_message c message;
+                cache_message c message;
                 put_user c (Message.author message);
                 List.iter (put_user c) (Message.mentions message);
                 (match (Message.member message, Message.guild_id message) with
