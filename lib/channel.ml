@@ -203,6 +203,7 @@ module type Channel = sig
   val flags : t -> int
   val permissions : t -> Permission.t option
   val create : string -> t
+  val with_last_message_id : t -> string -> t
   val of_yojson : Yojson.Safe.t -> (t, string) result
   val send : Rest.t -> t -> string -> unit
   val send_file : Rest.t -> t -> Attachment.Upload.t -> unit
@@ -529,6 +530,17 @@ include (
       }
 
     let create (id : string) : t = Partial (empty_common id)
+
+    let with_last_message_id (c : t) (last_message_id : string) : t =
+      match c with
+      | Text c -> Text { c with last_message_id = Some last_message_id }
+      | Direct c -> Direct { c with last_message_id = Some last_message_id }
+      | Group c -> Group { c with last_message_id = Some last_message_id }
+      | News c -> News { c with last_message_id = Some last_message_id }
+      | Thread c -> Thread { c with last_message_id = Some last_message_id }
+      | Forum c -> Forum { c with last_message_id = Some last_message_id }
+      | Media c -> Media { c with last_message_id = Some last_message_id }
+      | Voice _ | Category _ | Stage _ | Unknown _ | Partial _ -> c
 
     let parse_overwrites (json : Yojson.Safe.t) : Overwrite.t list =
       match Yojson.Safe.Util.member "permission_overwrites" json with

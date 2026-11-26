@@ -310,6 +310,8 @@ end
 
 include (
   struct
+    module String_set = Set.Make (String)
+
     type snapshot = {
       guild : Guild.t option;
       channel : Channel.t option;
@@ -732,6 +734,15 @@ include (
       Eio.Mutex.use_rw ~protect:true c.channels_mutex (fun () ->
           Hashtbl.replace c.channels (Channel.id ch) ch)
 
+    let update_channel_last_message_id (c : t) (channel_id : string)
+        (message_id : string) : unit =
+      Eio.Mutex.use_rw ~protect:true c.channels_mutex (fun () ->
+          match Hashtbl.find_opt c.channels channel_id with
+          | Some channel ->
+              Hashtbl.replace c.channels channel_id
+                (Channel.with_last_message_id channel message_id)
+          | None -> ())
+
     let put_guild_channels (c : t) (name : string) (guild_id : string)
         (json : Yojson.Safe.t) : unit =
       let open Yojson.Safe.Util in
@@ -809,6 +820,23 @@ include (
             (fun (message_id, _) r ->
               if List.mem message_id message_ids then None else Some r)
             c.reactions)
+
+    let reactions_for_message (c : t) (message_id : string) : Reaction.t list =
+      Eio.Mutex.use_ro c.reactions_mutex (fun () ->
+          Hashtbl.fold
+            (fun (id, _) reaction acc ->
+              if id = message_id then reaction :: acc else acc)
+            c.reactions [])
+
+    let sync_message_reactions (c : t) ~(channel_id : string)
+        ~(message_id : string) : unit =
+      let reactions = reactions_for_message c message_id in
+      Eio.Mutex.use_rw ~protect:true c.messages_mutex (fun () ->
+          match Hashtbl.find_opt c.messages (channel_id, message_id) with
+          | Some message ->
+              Hashtbl.replace c.messages (channel_id, message_id)
+                { message with reactions }
+          | None -> ())
 
     let refresh_message_reactions (c : t) (m : Message.t) : unit =
       drop_reactions c [ Message.id m ];
@@ -1039,18 +1067,37 @@ include (
             message_ids;
           message_ids)
 
+    let string_set (items : 'a list) (id : 'a -> string) : String_set.t =
+      List.fold_left
+        (fun set item -> String_set.add (id item) set)
+        String_set.empty items
+
+    let json_string_set (json : Yojson.Safe.t) (field : string)
+        (id_field : string) : String_set.t =
+      let open Yojson.Safe.Util in
+      match json |> member field with
+      | `List items ->
+          List.fold_left
+            (fun set item ->
+              match item |> member id_field |> to_string_option with
+              | Some id -> String_set.add id set
+              | None -> set)
+            String_set.empty items
+      | _ -> String_set.empty
+
     let drop_guild_messages (c : t) (channel_ids : string list) : string list =
+      let channel_ids = string_set channel_ids (fun id -> id) in
       Eio.Mutex.use_rw ~protect:true c.messages_mutex (fun () ->
           let message_ids =
             Hashtbl.fold
               (fun (channel_id, message_id) _ acc ->
-                if List.mem channel_id channel_ids then message_id :: acc
+                if String_set.mem channel_id channel_ids then message_id :: acc
                 else acc)
               c.messages []
           in
           Hashtbl.filter_map_inplace
             (fun (channel_id, _) m ->
-              if List.mem channel_id channel_ids then None else Some m)
+              if String_set.mem channel_id channel_ids then None else Some m)
             c.messages;
           message_ids)
 
@@ -1083,6 +1130,73 @@ include (
       match json |> member field with
       | `List _ -> Some (decode_list c name of_yojson json field)
       | _ -> None
+
+    let filter_guild_channels (c : t) (guild_id : string)
+        (present : String_set.t) : unit =
+      Eio.Mutex.use_rw ~protect:true c.channels_mutex (fun () ->
+          Hashtbl.filter_map_inplace
+            (fun channel_id channel ->
+              if
+                Channel.guild_id channel = Some guild_id
+                && not (String_set.mem channel_id present)
+              then None
+              else Some channel)
+            c.channels)
+
+    let filter_guild_table (mutex : Eio.Mutex.t)
+        (table : (string * string, 'a) Hashtbl.t) ~(guild_id : string)
+        (present : String_set.t) : unit =
+      Eio.Mutex.use_rw ~protect:true mutex (fun () ->
+          Hashtbl.filter_map_inplace
+            (fun (g, id) value ->
+              if g = guild_id && not (String_set.mem id present) then None
+              else Some value)
+            table)
+
+    let reconcile_guild (c : t) (g : Guild.t) (json : Yojson.Safe.t) : unit =
+      let guild_id = Guild.id g in
+      let channels =
+        string_set (Guild.channels g @ Guild.threads g) Channel.id
+      in
+      let members =
+        string_set (Guild.members g) (fun member ->
+            User.id (Member.user member))
+      in
+      let presences =
+        string_set (Guild.presences g) (fun presence ->
+            User.id (Presence.user presence))
+      in
+      let roles = string_set (Guild.roles g) Role.id in
+      let scheduled_events =
+        string_set (Guild.scheduled_events g) Guild_scheduled_event.id
+      in
+      let stage_instances =
+        string_set (Guild.stage_instances g) Stage_instance.channel_id
+      in
+      let auto_moderation_rules =
+        json_string_set json "auto_moderation_rules" "id"
+      in
+      let integrations = json_string_set json "integrations" "id" in
+      let voice_states = json_string_set json "voice_states" "user_id" in
+      let soundboard_sounds =
+        json_string_set json "soundboard_sounds" "sound_id"
+      in
+      filter_guild_channels c guild_id channels;
+      filter_guild_table c.members_mutex c.members ~guild_id members;
+      filter_guild_table c.presences_mutex c.presences ~guild_id presences;
+      filter_guild_table c.roles_mutex c.roles ~guild_id roles;
+      filter_guild_table c.scheduled_events_mutex c.scheduled_events ~guild_id
+        scheduled_events;
+      filter_guild_table c.stage_instances_mutex c.stage_instances ~guild_id
+        stage_instances;
+      filter_guild_table c.auto_moderation_rules_mutex c.auto_moderation_rules
+        ~guild_id auto_moderation_rules;
+      filter_guild_table c.integrations_mutex c.integrations ~guild_id
+        integrations;
+      filter_guild_table c.voice_states_mutex c.voice_states ~guild_id
+        voice_states;
+      filter_guild_table c.soundboard_sounds_mutex c.soundboard_sounds ~guild_id
+        soundboard_sounds
 
     let cache_event (c : t) (event : Discord_private.P_event.t)
         (json : Yojson.Safe.t) : unit =
@@ -1122,7 +1236,9 @@ include (
         when json |> member "unavailable" |> to_bool_option = Some true ->
           ()
       | Discord_private.P_event.Guild_create ->
-          decode Guild.of_yojson cache_guild
+          decode Guild.of_yojson (fun g ->
+              cache_guild g;
+              reconcile_guild c g json)
       | Discord_private.P_event.Guild_update -> (
           match json |> member "id" |> to_string_option with
           | Some guild_id -> (
@@ -1470,14 +1586,18 @@ include (
                           Hashtbl.replace c.reactions key
                             (Reaction.make ~channel_id ~message_id ~emoji
                                ~count:1 ~me:is_me ~count_details ~burst_colors
-                               ~me_burst:(is_me && burst)))
+                               ~me_burst:(is_me && burst)));
+                  sync_message_reactions c ~channel_id ~message_id
               | _ -> ()))
       | Discord_private.P_event.Message_reaction_remove -> (
           match Emoji.of_yojson (json |> member "emoji") with
           | Error msg -> log_decode_error c name msg
           | Ok emoji -> (
-              match json |> member "message_id" |> to_string_option with
-              | Some message_id ->
+              match
+                ( json |> member "channel_id" |> to_string_option,
+                  json |> member "message_id" |> to_string_option )
+              with
+              | Some channel_id, Some message_id ->
                   let burst =
                     json |> member "burst" |> to_bool_option
                     |> Option.value ~default:false
@@ -1524,20 +1644,30 @@ include (
                                  ~me_burst:
                                    (if is_me && burst then false
                                     else Reaction.me_burst r))
-                          end)
-              | None -> ()))
+                          end);
+                  sync_message_reactions c ~channel_id ~message_id
+              | _ -> ()))
       | Discord_private.P_event.Message_reaction_remove_all -> (
-          match json |> member "message_id" |> to_string_option with
-          | Some message_id -> drop_reactions c [ message_id ]
-          | None -> ())
+          match
+            ( json |> member "channel_id" |> to_string_option,
+              json |> member "message_id" |> to_string_option )
+          with
+          | Some channel_id, Some message_id ->
+              drop_reactions c [ message_id ];
+              sync_message_reactions c ~channel_id ~message_id
+          | _ -> ())
       | Discord_private.P_event.Message_reaction_remove_emoji -> (
           match Emoji.of_yojson (json |> member "emoji") with
           | Error msg -> log_decode_error c name msg
           | Ok emoji -> (
-              match json |> member "message_id" |> to_string_option with
-              | Some message_id ->
-                  remove_reaction c ~message_id ~emoji:(Emoji.identifier emoji)
-              | None -> ()))
+              match
+                ( json |> member "channel_id" |> to_string_option,
+                  json |> member "message_id" |> to_string_option )
+              with
+              | Some channel_id, Some message_id ->
+                  remove_reaction c ~message_id ~emoji:(Emoji.identifier emoji);
+                  sync_message_reactions c ~channel_id ~message_id
+              | _ -> ()))
       | Discord_private.P_event.Voice_state_update -> (
           match Voice_state.of_yojson json with
           | Error msg -> log_decode_error c name msg
@@ -1876,13 +2006,6 @@ include (
               | None -> ());
               put_user c (Member.user member)
           | Error msg -> log_decode_error c name msg)
-
-    let reactions_for_message (c : t) (message_id : string) : Reaction.t list =
-      Eio.Mutex.use_ro c.reactions_mutex (fun () ->
-          Hashtbl.fold
-            (fun (id, _) reaction acc ->
-              if id = message_id then reaction :: acc else acc)
-            c.reactions [])
 
     let log_handler_error (event : string) (exn : exn) : unit =
       prerr_endline ("handler error (" ^ event ^ "): " ^ Printexc.to_string exn)
@@ -3390,6 +3513,13 @@ include (
                 put_message c message;
                 put_user c (Message.author message);
                 List.iter (put_user c) (Message.mentions message);
+                (match (Message.member message, Message.guild_id message) with
+                | Some member, Some guild_id ->
+                    put_member c guild_id (User.id (Member.user member)) member
+                | _ -> ());
+                update_channel_last_message_id c
+                  (Message.channel_id message)
+                  (Message.id message);
                 refresh_message_reactions c message;
                 List.iter
                   (fun f ->
